@@ -29,13 +29,201 @@ class MainMenu:
         self.registry = Registry.load()
         self.docker_client = None
         self.thresholds = DEFAULT_THRESHOLDS
-        
+
         # Try to initialize Docker client
         try:
             self.docker_client = DockerClient()
         except Exception:
             self.docker_client = None
-    
+
+        # Check for missing credentials (will be called from run() when interactive)
+
+    def _check_missing_credentials(self):
+        """Check for missing service credentials and prompt for them."""
+        services = self.registry._data.get("services", {})
+        missing_creds = []
+
+        for service_name, service_data in services.items():
+            url = service_data.get("url")
+            if not url:
+                continue
+
+            # Check qBittorrent credentials
+            if service_name == "qbittorrent":
+                username = service_data.get("username")
+                password_ref = service_data.get("password_secret_ref")
+                password = self.registry.get_secret(password_ref) if password_ref else None
+
+                if not username or not password:
+                    missing_creds.append({
+                        "service": service_name,
+                        "type": "username/password",
+                        "details": "qBittorrent WebUI authentication"
+                    })
+
+            # Check Arr service API keys
+            elif service_name in ["radarr", "sonarr", "prowlarr"]:
+                api_key_ref = service_data.get("api_key_secret_ref")
+                api_key = self.registry.get_secret(api_key_ref) if api_key_ref else None
+
+                if not api_key:
+                    missing_creds.append({
+                        "service": service_name,
+                        "type": "API key",
+                        "details": f"{service_name.title()} API authentication"
+                    })
+
+            # Check Plex token
+            elif service_name == "plex":
+                token_ref = service_data.get("token_secret_ref")
+                token = self.registry.get_secret(token_ref) if token_ref else None
+
+                if not token:
+                    missing_creds.append({
+                        "service": service_name,
+                        "type": "authentication token",
+                        "details": "Plex server authentication"
+                    })
+
+        # Show missing credentials warning
+        if missing_creds and self.console and HAS_RICH:
+            self.console.print("\n[yellow]⚠️ Missing Service Credentials[/yellow]")
+            self.console.print("[dim]Some services are configured but missing authentication:[/dim]\n")
+
+            creds_table = Table(show_header=True)
+            creds_table.add_column("Service", style="cyan")
+            creds_table.add_column("Missing", style="white")
+            creds_table.add_column("Details", style="dim")
+
+            for cred in missing_creds:
+                creds_table.add_row(
+                    cred["service"],
+                    cred["type"],
+                    cred["details"]
+                )
+
+            self.console.print(creds_table)
+            self.console.print()
+
+            if Confirm.ask("Would you like to configure missing credentials now?", default=True):
+                self._prompt_for_missing_credentials(missing_creds)
+
+        elif missing_creds:
+            print("\n⚠️ Missing Service Credentials")
+            print("Some services are configured but missing authentication:\n")
+            for cred in missing_creds:
+                print(f"  {cred['service']}: Missing {cred['type']} ({cred['details']})")
+
+            response = input("Would you like to configure missing credentials now? (Y/n): ").strip().lower()
+            if response in ['', 'y', 'yes']:
+                self._prompt_for_missing_credentials(missing_creds)
+
+    def _prompt_for_missing_credentials(self, missing_creds):
+        """Prompt user to enter missing credentials."""
+        for cred in missing_creds:
+            service_name = cred["service"]
+            cred_type = cred["type"]
+
+            if self.console and HAS_RICH:
+                self.console.print(f"\n[bold cyan]🔑 Setting up {service_name.title()} credentials[/bold cyan]")
+            else:
+                print(f"\n🔑 Setting up {service_name.title()} credentials")
+
+            # Get existing service
+            existing_svc = self.registry.get_service(service_name)
+
+            if service_name == "qbittorrent":
+                # Prompt for username/password
+                if self.console and HAS_RICH:
+                    username = Prompt.ask("qBittorrent username", default=existing_svc.username if existing_svc else "admin")
+                    password = Prompt.ask("qBittorrent password", password=True)
+                else:
+                    default_username = existing_svc.username if existing_svc else "admin"
+                    username = input(f"qBittorrent username (default: {default_username}): ").strip() or default_username
+                    import getpass
+                    password = getpass.getpass("qBittorrent password: ")
+
+                if password:
+                    # Store password securely
+                    secret_ref = f"{service_name}_password"
+                    self.registry.set_secret(secret_ref, password)
+
+                    # Update service with username and secret ref
+                    from .registry import ServiceRef
+                    svc = ServiceRef(
+                        name=service_name,
+                        url=existing_svc.url if existing_svc else f"http://localhost:8080",
+                        username=username,
+                        password_secret_ref=secret_ref
+                    )
+                    self.registry.set_service(svc)
+                    self.registry.save()
+
+                    if self.console and HAS_RICH:
+                        self.console.print(f"[green]✅ qBittorrent credentials saved[/green]")
+                    else:
+                        print(f"✅ qBittorrent credentials saved")
+
+            elif service_name in ["radarr", "sonarr", "prowlarr"]:
+                # Prompt for API key
+                if self.console and HAS_RICH:
+                    self.console.print(f"[dim]Get API key from {service_name.title()} Settings > General > Security[/dim]")
+                    api_key = Prompt.ask(f"{service_name.title()} API key", password=True)
+                else:
+                    print(f"Get API key from {service_name.title()} Settings > General > Security")
+                    import getpass
+                    api_key = getpass.getpass(f"{service_name.title()} API key: ")
+
+                if api_key:
+                    # Store API key securely
+                    secret_ref = f"{service_name}_api_key"
+                    self.registry.set_secret(secret_ref, api_key)
+
+                    # Update service with API key ref
+                    from .registry import ServiceRef
+                    svc = ServiceRef(
+                        name=service_name,
+                        url=existing_svc.url if existing_svc else f"http://localhost:{self._get_default_port(service_name)}",
+                        api_key_secret_ref=secret_ref
+                    )
+                    self.registry.set_service(svc)
+                    self.registry.save()
+
+                    if self.console and HAS_RICH:
+                        self.console.print(f"[green]✅ {service_name.title()} API key saved[/green]")
+                    else:
+                        print(f"✅ {service_name.title()} API key saved")
+
+            elif service_name == "plex":
+                # Prompt for Plex token
+                if self.console and HAS_RICH:
+                    self.console.print("[dim]Get Plex token from https://plex.tv/claim[/dim]")
+                    plex_token = Prompt.ask("Plex authentication token", password=True)
+                else:
+                    print("Get Plex token from https://plex.tv/claim")
+                    import getpass
+                    plex_token = getpass.getpass("Plex authentication token: ")
+
+                if plex_token:
+                    # Store token securely
+                    secret_ref = f"{service_name}_token"
+                    self.registry.set_secret(secret_ref, plex_token)
+
+                    # Update service with token ref
+                    from .registry import ServiceRef
+                    svc = ServiceRef(
+                        name=service_name,
+                        url=existing_svc.url if existing_svc else "http://localhost:32400",
+                        token_secret_ref=secret_ref
+                    )
+                    self.registry.set_service(svc)
+                    self.registry.save()
+
+                    if self.console and HAS_RICH:
+                        self.console.print(f"[green]✅ Plex token saved[/green]")
+                    else:
+                        print(f"✅ Plex token saved")
+
     def show_banner(self):
         """Display the main banner."""
         if self.console and HAS_RICH:
@@ -90,6 +278,8 @@ class MainMenu:
     
     def show_main_menu(self) -> str:
         """Show the main menu and get user choice."""
+        from .utils.menu_navigation import create_menu
+        
         menu_options = [
             ("1", "🔍 Run Full Diagnostics", "Complete system health check"),
             ("2", "📊 Quick System Check", "Fast host and Docker status"),
@@ -97,42 +287,14 @@ class MainMenu:
             ("4", "⚙️ Configure Services", "Set up service URLs and credentials"),
             ("5", "🔧 Registry Management", "Manage service registry"),
             ("6", "📈 System Statistics", "View detailed system info"),
-            ("7", "🌐 Network Benchmarks", "Test network performance"),
-            ("8", "🎛️ Settings", "Configure thresholds and options"),
-            ("9", "❓ Help", "Show help and documentation"),
+            ("7", "🩺 Troubleshoot Service", "Create diagnostic snapshot for a specific service"),
+            ("8", "🌐 Network Benchmarks", "Test network performance"),
+            ("9", "🎛️ Settings", "Configure thresholds and options"),
+            ("10", "❓ Help", "Show help and documentation"),
             ("0", "🚪 Exit", "Exit MediaStack Doctor")
         ]
         
-        if self.console and HAS_RICH:
-            menu_table = Table(title="Main Menu", show_header=False, box=None)
-            menu_table.add_column("Option", style="bold cyan", width=3)
-            menu_table.add_column("Action", style="bold white", width=25)
-            menu_table.add_column("Description", style="dim", width=35)
-            
-            for option, action, description in menu_options:
-                menu_table.add_row(option, action, description)
-            
-            self.console.print(menu_table)
-            self.console.print()
-            
-            choice = Prompt.ask(
-                "[bold yellow]Choose an option[/bold yellow]",
-                choices=[opt[0] for opt in menu_options],
-                default="1"
-            )
-        else:
-            print("Main Menu:")
-            for option, action, description in menu_options:
-                print(f"  {option}. {action} - {description}")
-            print()
-            
-            while True:
-                choice = input("Choose an option (1-9, 0 to exit): ").strip()
-                if choice in [opt[0] for opt in menu_options]:
-                    break
-                print("Invalid choice. Please try again.")
-        
-        return choice
+        return create_menu("Main Menu", menu_options, self.console)
     
     def check_configuration(self) -> bool:
         """Check if basic configuration is present."""
@@ -157,60 +319,559 @@ class MainMenu:
     
     def run_diagnostics(self, quick: bool = False):
         """Run diagnostics with the current configuration."""
-        from .cli import run
-        from datetime import datetime
-        
-        # Prepare arguments
-        sections = "host,docker" if quick else None
-        
-        if self.console and HAS_RICH:
-            self.console.print(f"\n[bold green]{'Quick' if quick else 'Full'} Diagnostics Starting...[/bold green]")
-        else:
-            print(f"\n{'Quick' if quick else 'Full'} Diagnostics Starting...")
-        
-        # Create a mock context for the run function
-        class MockContext:
-            def __init__(self):
-                self.obj = {
-                    "output_dir": Path.home() / "mediastack-doctor" / "outputs",
-                    "redact": True,
-                    "allow_external_checks": False
-                }
-        
+        from .utils.diagnostics_runner import run_diagnostics_impl
+        from pathlib import Path
+
+        output_dir = Path.home() / "mediastack-doctor" / "outputs"
+        output_dir.mkdir(parents=True, exist_ok=True)
+
         try:
-            # Call the run function directly
-            from .cli import run as cli_run
-            ctx = MockContext()
-            
-            # Run diagnostics
-            cli_run(
-                ctx=ctx,
-                qb_url=None, qb_user=None, qb_pass=None,
-                plex_token=None, plex_url=None,
-                cloudflared_metrics=None, gluetun_host=None,
-                nic=None, pcap=None,
-                advisor=True, diff=None, sections=sections,
-                netbench="skip", deep=False,
-                verbose=True, thresholds=None
+            # Run diagnostics using the shared implementation
+            result = run_diagnostics_impl(
+                registry=self.registry,
+                docker_client=self.docker_client,
+                output_dir=output_dir,
+                advisor=True,
+                quick=quick,
+                verbose=True,
+                sections=None if not quick else "host,docker",
+                thresholds=self.thresholds,
+                redact=True,
+                allow_external_checks=False
             )
-            
+
+            # Show results
+            summary = result["summary"]
+            run_dir = result["run_dir"]
+
             if self.console and HAS_RICH:
                 self.console.print("\n[bold green]✅ Diagnostics completed![/bold green]")
-                
+                self.console.print(f"[blue]Reports saved to: {run_dir}[/blue]")
+
+                # Show summary
+                from rich.table import Table
+                summary_table = Table(title="Diagnostics Summary", show_header=True)
+                summary_table.add_column("Metric", style="cyan")
+                summary_table.add_column("Value", style="white")
+
+                summary_table.add_row("Total Checks", str(summary["total"]))
+                summary_table.add_row("Passed", f"[green]{summary['passed']}[/green]")
+                summary_table.add_row("Warnings", f"[yellow]{summary['warnings']}[/yellow]")
+                summary_table.add_row("Failed", f"[red]{summary['failed']}[/red]")
+                summary_table.add_row("Success Rate", f"{summary['success_rate']:.1f}%")
+
+                self.console.print(summary_table)
+
                 if Confirm.ask("Would you like to browse the results now?", default=True):
                     self.browse_reports()
             else:
                 print("\n✅ Diagnostics completed!")
+                print(f"Reports saved to: {run_dir}")
+                print(f"Summary: {summary['passed']} passed, {summary['warnings']} warnings, {summary['failed']} failed")
                 response = input("Would you like to browse the results now? (Y/n): ").strip().lower()
                 if response in ['', 'y', 'yes']:
                     self.browse_reports()
-                    
+
         except Exception as e:
             if self.console and HAS_RICH:
                 self.console.print(f"[red]❌ Diagnostics failed: {e}[/red]")
             else:
                 print(f"❌ Diagnostics failed: {e}")
-    
+
+            input("Press Enter to continue...")
+
+    def quick_system_check(self):
+        """Run a quick system check (host + docker sections)."""
+        from .utils.diagnostics_runner import run_diagnostics_impl
+        from pathlib import Path
+
+        output_dir = Path.home() / "mediastack-doctor" / "outputs"
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        try:
+            # Run quick diagnostics
+            result = run_diagnostics_impl(
+                registry=self.registry,
+                docker_client=self.docker_client,
+                output_dir=output_dir,
+                advisor=True,
+                quick=True,
+                verbose=False,  # Less verbose for quick check
+                sections="host,docker",
+                thresholds=self.thresholds,
+                redact=True,
+                allow_external_checks=False
+            )
+
+            # Show enhanced summary with explanations
+            summary = result["summary"]
+            all_checks = result["checks"]
+
+            if self.console and HAS_RICH:
+                summary_table = Table(title="Quick System Check Results", show_header=True)
+                summary_table.add_column("Category", style="cyan")
+                summary_table.add_column("Passed", style="green")
+                summary_table.add_column("Warnings", style="yellow")
+                summary_table.add_column("Failed", style="red")
+
+                categories = {}
+                for check in all_checks:
+                    cat = check.get("category", "Unknown")
+                    if cat not in categories:
+                        categories[cat] = {"pass": 0, "warn": 0, "fail": 0}
+
+                    severity = check.get("severity", "info")
+                    if severity == "info":
+                        categories[cat]["pass"] += 1
+                    elif severity == "warn":
+                        categories[cat]["warn"] += 1
+                    elif severity == "fail":
+                        categories[cat]["fail"] += 1
+
+                for category, counts in categories.items():
+                    summary_table.add_row(
+                        category,
+                        str(counts["pass"]),
+                        str(counts["warn"]),
+                        str(counts["fail"])
+                    )
+
+                self.console.print("\n")
+                self.console.print(summary_table)
+
+                # Show top issues with enhanced explanations
+                failed_checks = [c for c in all_checks if c.get("severity") == "fail"][:3]
+                warn_checks = [c for c in all_checks if c.get("severity") == "warn"][:3]
+
+                if failed_checks or warn_checks:
+                    self.console.print("\n[bold yellow]Top Issues Found:[/bold yellow]")
+
+                    for check in failed_checks + warn_checks:
+                        severity_icon = "❌" if check.get("severity") == "fail" else "⚠️"
+                        title = check.get('title', 'Unknown')
+                        evidence = check.get('evidence', '')
+
+                        self.console.print(f"  {severity_icon} [bold]{title}[/bold]")
+                        self.console.print(f"    [dim]Evidence: {evidence}[/dim]")
+
+                        # Enhanced explanations
+                        if "Missing Expected Services" in title:
+                            self.console.print(f"    [yellow]💡 Some containers may be down - try: docker-compose up -d[/yellow]")
+                        elif "CPU Usage" in title:
+                            self.console.print(f"    [yellow]💡 High CPU usage detected - check for runaway processes[/yellow]")
+                        elif "Disk Usage" in title:
+                            self.console.print(f"    [yellow]💡 Low disk space - consider cleanup or expansion[/yellow]")
+                        elif "Container Status" in title:
+                            self.console.print(f"    [yellow]💡 Container issue - check logs with: docker logs {title.split(' - ')[1] if ' - ' in title else 'container'}[/yellow]")
+
+                # Check for serious issues
+                serious_issues = summary["failed"] > 5 or (summary["failed"] > 0 and "CPU" in str([c.get("title") for c in failed_checks]))
+
+                if serious_issues:
+                    self.console.print("\n[bold red]⚠️ Serious issues detected![/bold red]")
+                    if Confirm.ask("Would you like to run full diagnostics for detailed analysis?", default=True):
+                        self.run_diagnostics(quick=False)
+                        return
+
+                self.console.print("\n[bold blue]💡 For detailed analysis, use 'Run Full Diagnostics'[/bold blue]")
+            else:
+                print("\nQuick System Check Results:")
+                categories = {}
+                for check in all_checks:
+                    cat = check.get("category", "Unknown")
+                    if cat not in categories:
+                        categories[cat] = {"pass": 0, "warn": 0, "fail": 0}
+
+                    severity = check.get("severity", "info")
+                    if severity == "info":
+                        categories[cat]["pass"] += 1
+                    elif severity == "warn":
+                        categories[cat]["warn"] += 1
+                    elif severity == "fail":
+                        categories[cat]["fail"] += 1
+
+                for category, counts in categories.items():
+                    print(f"  {category}: {counts['pass']} passed, {counts['warn']} warnings, {counts['fail']} failed")
+
+                # Show top issues
+                failed_checks = [c for c in all_checks if c.get("severity") == "fail"][:3]
+                warn_checks = [c for c in all_checks if c.get("severity") == "warn"][:3]
+
+                if failed_checks or warn_checks:
+                    print("\nTop Issues Found:")
+                    for check in failed_checks + warn_checks:
+                        severity_icon = "❌" if check.get("severity") == "fail" else "⚠️"
+                        title = check.get('title', 'Unknown')
+                        evidence = check.get('evidence', '')
+                        print(f"  {severity_icon} {title}")
+                        print(f"    Evidence: {evidence}")
+
+                print("\n💡 For detailed analysis, use 'Run Full Diagnostics'")
+
+            input("\nPress Enter to continue...")
+
+        except Exception as e:
+            if self.console and HAS_RICH:
+                self.console.print(f"[red]❌ Quick check failed: {e}[/red]")
+            else:
+                print(f"❌ Quick check failed: {e}")
+
+            input("Press Enter to continue...")
+
+    def registry_management(self):
+        """Interactive registry management submenu."""
+        from .utils.menu_navigation import create_menu
+        
+        while True:
+            # Show current services first
+            if self.console and HAS_RICH:
+                self.console.print("\n[bold cyan]🔧 Registry Management[/bold cyan]\n")
+
+                registry_table = Table(title="Current Services", show_header=True)
+                registry_table.add_column("Service", style="cyan")
+                registry_table.add_column("URL", style="white")
+                registry_table.add_column("Auth", style="green")
+
+                services = self.registry._data.get("services", {})
+                if services:
+                    for name, svc_data in services.items():
+                        url = svc_data.get("url", "Not configured")
+                        
+                        # Check authentication status
+                        auth_status = "❌ No auth"
+                        if svc_data.get("api_key_secret_ref"):
+                            auth_status = "🔑 API key"
+                        elif svc_data.get("password_secret_ref"):
+                            auth_status = "🔒 Password"
+                        elif svc_data.get("token_secret_ref"):
+                            auth_status = "🎫 Token"
+                        elif name in ["overseerr", "filebrowser"]:
+                            auth_status = "✅ Optional"
+                        
+                        registry_table.add_row(name, url, auth_status)
+                else:
+                    registry_table.add_row("No services configured", "", "")
+
+                self.console.print(registry_table)
+                self.console.print()
+            else:
+                print("\n🔧 Registry Management\n")
+                services = self.registry._data.get("services", {})
+                print("Current Services:")
+                if services:
+                    for name, svc_data in services.items():
+                        url = svc_data.get("url", "Not configured")
+                        print(f"  {name}: {url}")
+                else:
+                    print("  No services configured")
+                print()
+
+            menu_options = [
+                ("1", "📋 List Services", "View all configured services"),
+                ("2", "➕ Add/Edit Service", "Add or modify a service configuration"),
+                ("3", "🔍 Discover Services", "Auto-discover services from Docker containers"),
+                ("4", "🔑 Manage Secrets", "View and manage stored credentials"),
+                ("5", "🔗 Test Connectivity", "Test connectivity to configured services"),
+                ("6", "🗑️ Remove Service", "Remove a service from registry"),
+                ("0", "⬅️ Back to Main Menu", "Return to main menu")
+            ]
+
+            choice = create_menu("Registry Management Menu", menu_options, self.console)
+
+            if choice == "0":
+                break
+            elif choice == "1":
+                self._list_services()
+            elif choice == "2":
+                self._add_edit_service()
+            elif choice == "3":
+                self._discover_services()
+            elif choice == "4":
+                self._manage_secrets()
+            elif choice == "5":
+                self._test_connectivity()
+            elif choice == "6":
+                self._remove_service()
+
+    def _list_services(self):
+        """List all configured services."""
+        services = self.registry._data.get("services", {})
+
+        if not services:
+            if self.console and HAS_RICH:
+                self.console.print("[yellow]No services configured.[/yellow]")
+            else:
+                print("No services configured.")
+            return
+
+        if self.console and HAS_RICH:
+            services_table = Table(title="Configured Services", show_header=True)
+            services_table.add_column("Service", style="cyan")
+            services_table.add_column("URL", style="white")
+            services_table.add_column("Container", style="dim")
+
+            for name, svc_data in services.items():
+                url = svc_data.get("url", "Not configured")
+                container = svc_data.get("container", "Not set")
+                services_table.add_row(name, url, container)
+
+            self.console.print("\n")
+            self.console.print(services_table)
+        else:
+            print("\nConfigured Services:")
+            for name, svc_data in services.items():
+                url = svc_data.get("url", "Not configured")
+                container = svc_data.get("container", "Not set")
+                print(f"  {name}: {url} (container: {container})")
+
+        input("\nPress Enter to continue...")
+
+    def _add_edit_service(self):
+        """Add or edit a service configuration."""
+        if self.console and HAS_RICH:
+            service_name = Prompt.ask("Enter service name", choices=["qbittorrent", "radarr", "sonarr", "prowlarr", "plex", "overseerr"])
+        else:
+            while True:
+                service_name = input("Enter service name (qbittorrent, radarr, sonarr, prowlarr, plex, overseerr): ").strip().lower()
+                if service_name in ["qbittorrent", "radarr", "sonarr", "prowlarr", "plex", "overseerr"]:
+                    break
+                print("Invalid service name. Please try again.")
+
+        # Get existing service or create new
+        existing_svc = self.registry.get_service(service_name)
+
+        if self.console and HAS_RICH:
+            url = Prompt.ask(
+                "Enter service URL",
+                default=existing_svc.url if existing_svc else f"http://localhost:{self._get_default_port(service_name)}"
+            )
+        else:
+            existing_svc = self.registry.get_service(service_name)
+            default_url = existing_svc.url if existing_svc else f"http://localhost:{self._get_default_port(service_name)}"
+            url = input(f"Enter service URL (default: {default_url}): ").strip()
+            if not url:
+                url = default_url
+
+        # Create service reference
+        from .registry import ServiceRef
+        svc = ServiceRef(name=service_name, url=url)
+
+        # Save service
+        self.registry.set_service(svc)
+        self.registry.save()
+
+        if self.console and HAS_RICH:
+            self.console.print(f"[green]✅ Service '{service_name}' saved[/green]")
+        else:
+            print(f"✅ Service '{service_name}' saved")
+
+        input("Press Enter to continue...")
+
+    def _get_default_port(self, service_name: str) -> int:
+        """Get default port for a service."""
+        ports = {
+            "qbittorrent": 8080,
+            "radarr": 7878,
+            "sonarr": 8989,
+            "prowlarr": 9696,
+            "plex": 32400,
+            "overseerr": 5055
+        }
+        return ports.get(service_name, 8080)
+
+    def _discover_services(self):
+        """Discover services from Docker containers."""
+        self._auto_discover_services()
+        input("Press Enter to continue...")
+
+    def _manage_secrets(self):
+        """Manage stored secrets."""
+        secrets = self.registry._data.get("secrets", [])
+
+        if not secrets:
+            if self.console and HAS_RICH:
+                self.console.print("[yellow]No secrets stored.[/yellow]")
+            else:
+                print("No secrets stored.")
+            input("Press Enter to continue...")
+            return
+
+        if self.console and HAS_RICH:
+            secrets_table = Table(title="Stored Secrets", show_header=True)
+            secrets_table.add_column("Secret ID", style="cyan")
+            secrets_table.add_column("Status", style="white")
+
+            for secret_id in secrets:
+                status = "✅ Stored" if self.registry.get_secret(secret_id) else "❌ Missing"
+                secrets_table.add_row(secret_id, status)
+
+            self.console.print("\n")
+            self.console.print(secrets_table)
+        else:
+            print("\nStored Secrets:")
+            for secret_id in secrets:
+                status = "✅ Stored" if self.registry.get_secret(secret_id) else "❌ Missing"
+                print(f"  {secret_id}: {status}")
+
+        input("\nPress Enter to continue...")
+
+    def _test_connectivity(self):
+        """Test connectivity to configured services."""
+        services = self.registry._data.get("services", {})
+
+        if not services:
+            if self.console and HAS_RICH:
+                self.console.print("[yellow]No services configured for connectivity testing.[/yellow]")
+            else:
+                print("No services configured for connectivity testing.")
+            input("Press Enter to continue...")
+            return
+
+        if self.console and HAS_RICH:
+            conn_table = Table(title="Connectivity Test Results", show_header=True)
+            conn_table.add_column("Service", style="cyan")
+            conn_table.add_column("Status", style="white")
+            conn_table.add_column("Response", style="dim")
+
+            for name, svc_data in services.items():
+                url = svc_data.get("url")
+                if url:
+                    try:
+                        import requests
+                        response = requests.head(url, timeout=5)
+                        status = "✅ Connected" if response.status_code < 400 else f"❌ HTTP {response.status_code}"
+                        conn_table.add_row(name, status, f"HTTP {response.status_code}")
+                    except Exception as e:
+                        conn_table.add_row(name, "❌ Failed", str(e))
+                else:
+                    conn_table.add_row(name, "⚠️ No URL", "Service URL not configured")
+
+            self.console.print("\n")
+            self.console.print(conn_table)
+        else:
+            print("\nConnectivity Test Results:")
+            for name, svc_data in services.items():
+                url = svc_data.get("url")
+                if url:
+                    try:
+                        import requests
+                        response = requests.head(url, timeout=5)
+                        status = "✅ Connected" if response.status_code < 400 else f"❌ HTTP {response.status_code}"
+                        print(f"  {name}: {status} (HTTP {response.status_code})")
+                    except Exception as e:
+                        print(f"  {name}: ❌ Failed ({e})")
+                else:
+                    print(f"  {name}: ⚠️ No URL configured")
+
+        input("\nPress Enter to continue...")
+
+    def _remove_service(self):
+        """Remove a service from the registry."""
+        services = self.registry._data.get("services", {})
+        
+        if not services:
+            if self.console and HAS_RICH:
+                self.console.print("[yellow]No services to remove.[/yellow]")
+            else:
+                print("No services to remove.")
+            input("Press Enter to continue...")
+            return
+
+        # Select service to remove
+        service_names = list(services.keys())
+        
+        if self.console and HAS_RICH:
+            from rich.prompt import Prompt
+            service_name = Prompt.ask("Select service to remove", choices=service_names)
+            
+            self.console.print(f"[yellow]⚠️ This will remove '{service_name}' from the registry.[/yellow]")
+            self.console.print(f"[yellow]Associated secrets will remain in keyring.[/yellow]")
+            
+            if Confirm.ask(f"Are you sure you want to remove '{service_name}'?", default=False):
+                del self.registry._data["services"][service_name]
+                self.registry.save()
+                self.console.print(f"[green]✅ Service '{service_name}' removed[/green]")
+            else:
+                self.console.print("[blue]Removal cancelled[/blue]")
+        else:
+            print("Available services:")
+            for i, name in enumerate(service_names):
+                print(f"  {i+1}. {name}")
+            
+            while True:
+                try:
+                    choice = int(input("Select service number to remove: ").strip())
+                    if 1 <= choice <= len(service_names):
+                        service_name = service_names[choice - 1]
+                        break
+                    print("Invalid choice. Please try again.")
+                except ValueError:
+                    print("Please enter a number.")
+            
+            print(f"⚠️ This will remove '{service_name}' from the registry.")
+            print(f"Associated secrets will remain in keyring.")
+            
+            response = input(f"Are you sure you want to remove '{service_name}'? (y/N): ").strip().lower()
+            if response in ['y', 'yes']:
+                del self.registry._data["services"][service_name]
+                self.registry.save()
+                print(f"✅ Service '{service_name}' removed")
+            else:
+                print("Removal cancelled")
+        
+        input("\nPress Enter to continue...")
+
+    def troubleshoot_service(self):
+        """Create a diagnostic snapshot for a specific service."""
+        from .troubleshooter import ServiceTroubleshooter
+        from pathlib import Path
+
+        # Available services
+        services = [
+            ("qbittorrent", "qBittorrent"),
+            ("radarr", "Radarr"),
+            ("sonarr", "Sonarr"),
+            ("prowlarr", "Prowlarr"),
+            ("plex", "Plex Media Server"),
+            ("overseerr", "Overseerr"),
+            ("sabnzbd", "SABnzbd"),
+            ("gluetun", "Gluetun VPN"),
+        ]
+
+        from .utils.menu_navigation import create_menu
+        
+        service_choice = create_menu("Select Service to Troubleshoot", 
+                                   [(key, f"🩺 {name}", f"Create snapshot for {name}") for key, name in services] + 
+                                   [("0", "⬅️ Back", "Return to main menu")], 
+                                   self.console)
+        
+        if service_choice == "0":
+            return
+            
+        service_key = service_choice
+
+        try:
+            troubleshooter = ServiceTroubleshooter(self.registry, self.docker_client)
+            snapshot_path = troubleshooter.create_snapshot(service_key)
+
+            if self.console and HAS_RICH:
+                self.console.print(f"\n[bold green]✅ Service snapshot created![/bold green]")
+                self.console.print(f"[blue]Snapshot saved to: {snapshot_path}[/blue]")
+                self.console.print(f"\n[bold yellow]💡 Share this snapshot file with support for detailed analysis[/bold yellow]")
+            else:
+                print(f"\n✅ Service snapshot created!")
+                print(f"Snapshot saved to: {snapshot_path}")
+                print(f"\n💡 Share this snapshot file with support for detailed analysis")
+
+            input("\nPress Enter to continue...")
+
+        except Exception as e:
+            if self.console and HAS_RICH:
+                self.console.print(f"[red]❌ Troubleshooting failed: {e}[/red]")
+            else:
+                print(f"❌ Troubleshooting failed: {e}")
+            input("\nPress Enter to continue...")
+
     def browse_reports(self):
         """Browse previous diagnostic reports."""
         from .utils.viewer import run_browser
@@ -400,6 +1061,80 @@ class MainMenu:
                         secret_ref = f"{service_key}_api_key"
                         self.registry.set_secret(secret_ref, api_key)
                         svc.api_key_secret_ref = secret_ref
+
+    def network_benchmarks(self):
+        """Network performance testing."""
+        if self.console and HAS_RICH:
+            self.console.print("\n[bold cyan]🌐 Network Benchmarks[/bold cyan]\n")
+            
+            # Check for speedtest-cli
+            import subprocess
+            try:
+                subprocess.run(["which", "speedtest-cli"], check=True, capture_output=True)
+                speedtest_available = True
+            except subprocess.CalledProcessError:
+                speedtest_available = False
+            
+            if speedtest_available:
+                if Confirm.ask("Run WAN speed test? (requires speedtest-cli)", default=False):
+                    try:
+                        self.console.print("[blue]Running WAN speed test...[/blue]")
+                        result = subprocess.run(
+                            ["speedtest-cli", "--simple"], 
+                            capture_output=True, text=True, timeout=60
+                        )
+                        
+                        if result.returncode == 0:
+                            self.console.print("[green]WAN Speed Test Results:[/green]")
+                            self.console.print(result.stdout)
+                        else:
+                            self.console.print(f"[red]Speed test failed: {result.stderr}[/red]")
+                    except Exception as e:
+                        self.console.print(f"[red]Speed test error: {e}[/red]")
+            else:
+                self.console.print("[yellow]speedtest-cli not available[/yellow]")
+                self.console.print("[dim]Install with: sudo apt install speedtest-cli[/dim]")
+            
+            # Basic ping test
+            if Confirm.ask("Run basic connectivity test?", default=True):
+                targets = ["8.8.8.8", "1.1.1.1", "google.com"]
+                
+                ping_table = Table(title="Ping Test Results", show_header=True)
+                ping_table.add_column("Target", style="cyan")
+                ping_table.add_column("Status", style="white")
+                ping_table.add_column("Latency", style="green")
+                
+                for target in targets:
+                    try:
+                        result = subprocess.run(
+                            ["ping", "-c", "3", target],
+                            capture_output=True, text=True, timeout=15
+                        )
+                        
+                        if result.returncode == 0:
+                            # Extract average latency
+                            output = result.stdout
+                            if "avg" in output:
+                                latency_line = [line for line in output.split('\n') if 'avg' in line]
+                                if latency_line:
+                                    latency = latency_line[0].split('/')[-2] + "ms"
+                                else:
+                                    latency = "Success"
+                            else:
+                                latency = "Success"
+                            ping_table.add_row(target, "✅ Reachable", latency)
+                        else:
+                            ping_table.add_row(target, "❌ Failed", "N/A")
+                    except Exception:
+                        ping_table.add_row(target, "❌ Error", "N/A")
+                
+                self.console.print(ping_table)
+        else:
+            print("\n🌐 Network Benchmarks")
+            print("Network benchmarks require rich interface for best experience.")
+            print("Use: pip install rich")
+        
+        input("\nPress Enter to continue...")
     
     def show_system_stats(self):
         """Show detailed system statistics."""
@@ -481,43 +1216,136 @@ class MainMenu:
             settings_table = Table(title="Current Settings", show_header=True)
             settings_table.add_column("Setting", style="cyan")
             settings_table.add_column("Value", style="white")
+            settings_table.add_column("Description", style="dim")
             
             # Show current thresholds
             cpu_thresholds = self.thresholds.get("cpu", {})
-            settings_table.add_row("CPU Warning", f"{cpu_thresholds.get('warn', 80)}%")
-            settings_table.add_row("CPU Critical", f"{cpu_thresholds.get('fail', 90)}%")
+            settings_table.add_row("CPU Warning", f"{cpu_thresholds.get('warn', 80)}%", "Warning threshold for CPU usage")
+            settings_table.add_row("CPU Critical", f"{cpu_thresholds.get('fail', 90)}%", "Critical threshold for CPU usage")
             
             temp_thresholds = self.thresholds.get("temp_c", {})
-            settings_table.add_row("Temperature Warning", f"{temp_thresholds.get('warn', 85)}°C")
-            settings_table.add_row("Temperature Critical", f"{temp_thresholds.get('fail', 92)}°C")
+            settings_table.add_row("Temperature Warning", f"{temp_thresholds.get('warn', 85)}°C", "Warning threshold for temperature")
+            settings_table.add_row("Temperature Critical", f"{temp_thresholds.get('fail', 92)}°C", "Critical threshold for temperature")
+            
+            disk_thresholds = self.thresholds.get("disk_pct", {})
+            settings_table.add_row("Disk Warning", f"{disk_thresholds.get('warn', 85)}%", "Warning threshold for disk usage")
+            settings_table.add_row("Disk Critical", f"{disk_thresholds.get('fail', 95)}%", "Critical threshold for disk usage")
             
             self.console.print(settings_table)
+            self.console.print()
             
-            if Confirm.ask("Would you like to modify thresholds?", default=False):
-                self._modify_thresholds()
+            self.console.print("[bold yellow]📝 Threshold Configuration[/bold yellow]")
+            self.console.print("[dim]To modify thresholds, edit the 'thresholds.yml' file in your project directory.[/dim]")
+            self.console.print("[dim]Then run diagnostics with: --thresholds ./thresholds.yml[/dim]")
+            self.console.print()
+            
+            # Show example thresholds.yml
+            example_yaml = """[bold]Example thresholds.yml:[/bold]
+[dim]```yaml
+cpu:
+  warn: 75.0
+  fail: 85.0
+temp_c:
+  warn: 80.0
+  fail: 90.0
+disk_pct:
+  warn: 80.0
+  fail: 90.0
+```[/dim]"""
+            self.console.print(example_yaml)
+            
         else:
             print("\n🎛️ Settings\n")
             
             cpu_thresholds = self.thresholds.get("cpu", {})
             temp_thresholds = self.thresholds.get("temp_c", {})
+            disk_thresholds = self.thresholds.get("disk_pct", {})
             
-            print(f"CPU Warning: {cpu_thresholds.get('warn', 80)}%")
-            print(f"CPU Critical: {cpu_thresholds.get('fail', 90)}%")
-            print(f"Temperature Warning: {temp_thresholds.get('warn', 85)}°C")
-            print(f"Temperature Critical: {temp_thresholds.get('fail', 92)}°C")
+            print("Current Thresholds:")
+            print(f"  CPU Warning: {cpu_thresholds.get('warn', 80)}%")
+            print(f"  CPU Critical: {cpu_thresholds.get('fail', 90)}%")
+            print(f"  Temperature Warning: {temp_thresholds.get('warn', 85)}°C")
+            print(f"  Temperature Critical: {temp_thresholds.get('fail', 92)}°C")
+            print(f"  Disk Warning: {disk_thresholds.get('warn', 85)}%")
+            print(f"  Disk Critical: {disk_thresholds.get('fail', 95)}%")
+            print()
             
-            response = input("Would you like to modify thresholds? (y/N): ").strip().lower()
-            if response in ['y', 'yes']:
-                self._modify_thresholds()
-    
-    def _modify_thresholds(self):
-        """Modify threshold settings."""
-        # This is a simplified version - in a full implementation,
-        # you'd want to save custom thresholds to a file
+            print("To modify thresholds, edit the 'thresholds.yml' file in your project directory.")
+            print("Then run diagnostics with: --thresholds ./thresholds.yml")
+        
+        input("\nPress Enter to continue...")
+
+    def show_system_stats(self):
+        """Show detailed system statistics."""
+        import psutil
+        from datetime import datetime
+
         if self.console and HAS_RICH:
-            self.console.print("[dim]Threshold modification coming in a future update...[/dim]")
+            self.console.print("\n[bold cyan]📊 System Statistics[/bold cyan]\n")
+
+            # System info table
+            system_table = Table(title="System Information", show_header=True)
+            system_table.add_column("Metric", style="cyan")
+            system_table.add_column("Value", style="white")
+
+            # CPU info
+            cpu_percent = psutil.cpu_percent(interval=1)
+            cpu_count = psutil.cpu_count()
+            system_table.add_row("CPU Usage", f"{cpu_percent:.1f}%")
+            system_table.add_row("CPU Cores", str(cpu_count))
+
+            # Memory info
+            memory = psutil.virtual_memory()
+            system_table.add_row("Memory Usage", f"{memory.percent:.1f}% ({memory.used / (1024**3):.1f}GB / {memory.total / (1024**3):.1f}GB)")
+
+            # Disk info
+            disk = psutil.disk_usage('/')
+            system_table.add_row("Root Disk", f"{disk.percent:.1f}% ({disk.used / (1024**3):.1f}GB / {disk.total / (1024**3):.1f}GB)")
+
+            # Uptime
+            boot_time = datetime.fromtimestamp(psutil.boot_time())
+            uptime = datetime.now() - boot_time
+            system_table.add_row("Uptime", str(uptime).split('.')[0])
+
+            self.console.print(system_table)
+
+            # Docker info if available
+            if self.docker_client:
+                containers = self.docker_client.list_containers()
+                docker_table = Table(title="Docker Containers", show_header=True)
+                docker_table.add_column("Name", style="cyan")
+                docker_table.add_column("Status", style="white")
+                docker_table.add_column("Image", style="dim")
+
+                for container in containers[:10]:  # Show first 10
+                    status_color = "green" if container["status"].startswith("Up") else "red"
+                    docker_table.add_row(
+                        container["name"],
+                        f"[{status_color}]{container['status']}[/{status_color}]",
+                        container.get("image", "unknown")
+                    )
+
+                self.console.print("\n")
+                self.console.print(docker_table)
         else:
-            print("Threshold modification coming in a future update...")
+            print("\n📊 System Statistics\n")
+
+            cpu_percent = psutil.cpu_percent(interval=1)
+            cpu_count = psutil.cpu_count()
+            memory = psutil.virtual_memory()
+            disk = psutil.disk_usage('/')
+
+            print(f"CPU Usage: {cpu_percent:.1f}% ({cpu_count} cores)")
+            print(f"Memory: {memory.percent:.1f}% ({memory.used / (1024**3):.1f}GB / {memory.total / (1024**3):.1f}GB)")
+            print(f"Root Disk: {disk.percent:.1f}% ({disk.used / (1024**3):.1f}GB / {disk.total / (1024**3):.1f}GB)")
+
+            if self.docker_client:
+                containers = self.docker_client.list_containers()
+                print(f"\nDocker Containers: {len(containers)} total")
+                for container in containers[:5]:  # Show first 5
+                    print(f"  {container['name']}: {container['status']}")
+
+        input("\nPress Enter to continue...")
     
     def show_help(self):
         """Show help information."""
@@ -568,12 +1396,15 @@ For more help, check the generated reports or visit the GitHub repository.
         if not HAS_RICH:
             print("Note: Install 'rich' for enhanced display: pip install rich")
             print()
-        
+
+        # Check for missing credentials on first run
+        self._check_missing_credentials()
+
         while True:
             try:
                 self.show_banner()
                 self.show_system_status()
-                
+
                 choice = self.show_main_menu()
                 
                 if choice == "0":
@@ -590,7 +1421,7 @@ For more help, check the generated reports or visit the GitHub repository.
                         self.configure_services()
                 
                 elif choice == "2":
-                    self.run_diagnostics(quick=True)
+                    self.quick_system_check()
                 
                 elif choice == "3":
                     self.browse_reports()
@@ -599,26 +1430,21 @@ For more help, check the generated reports or visit the GitHub repository.
                     self.configure_services()
                 
                 elif choice == "5":
-                    # Registry management - could call existing CLI commands
-                    if self.console and HAS_RICH:
-                        self.console.print("[dim]Use 'mediastack-doctor registry' commands for advanced registry management[/dim]")
-                    else:
-                        print("Use 'mediastack-doctor registry' commands for advanced registry management")
+                    self.registry_management()
                 
                 elif choice == "6":
                     self.show_system_stats()
-                
+
                 elif choice == "7":
-                    if self.console and HAS_RICH:
-                        self.console.print("[dim]Network benchmarks coming in a future update...[/dim]")
-                    else:
-                        print("Network benchmarks coming in a future update...")
-                    input("Press Enter to continue...")
-                
+                    self.troubleshoot_service()
+
                 elif choice == "8":
-                    self.show_settings()
-                
+                    self.network_benchmarks()
+
                 elif choice == "9":
+                    self.show_settings()
+
+                elif choice == "10":
                     self.show_help()
                 
                 # Clear screen between menu iterations
