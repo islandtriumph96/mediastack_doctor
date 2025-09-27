@@ -136,14 +136,20 @@ def _check_arr_api(service_info: Dict[str, Any]) -> List[Dict[str, Any]]:
                     "suggested_fix": f"Check API key for {service_name} in registry",
                 })
             else:
+                service_key = service_info['service_key'].lower()
                 checks.append({
                     "id": f"A3_{service_info['service_key']}",
                     "category": "Arr Stack (Radarr, Sonarr, Prowlarr)",
-                    "title": f"{service_name} API Authentication",
+                    "title": f"{service_name} API Authentication - Missing API Key",
                     "severity": "warn",
                     "evidence": f"No API key configured for {service_name}",
-                    "why_it_matters": f"Cannot test {service_name} API functionality",
-                    "suggested_fix": f"Configure API key for {service_name} in registry",
+                    "why_it_matters": f"Cannot test {service_name} API functionality without API key",
+                    "suggested_fix": [
+                        f"Get API key from {service_name} Settings > General > Security",
+                        f"Run: mediastack-doctor registry set {service_key} --api-key-secret-ref {service_key}_api_key",
+                        f"Run: mediastack-doctor registry secret set {service_key}_api_key",
+                        f"Or use environment variable: {service_key.upper()}_API_KEY"
+                    ],
                 })
         else:
             checks.append({

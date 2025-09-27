@@ -8,12 +8,18 @@ from typing import Any, Dict, List, Optional
 import psutil
 
 
-def run_checks(registry: Any, nic: Optional[str] = None, pcap_duration: Optional[int] = None) -> List[Dict[str, Any]]:
+def run_checks(registry: Any, docker_client: Any = None, nic: Optional[str] = None, pcap_duration: Optional[int] = None, thresholds: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
     """Run host system checks."""
+    from ..utils.thresholds import DEFAULT_THRESHOLDS
+    
+    # Use provided thresholds or defaults
+    if not thresholds:
+        thresholds = DEFAULT_THRESHOLDS
+    
     checks = []
     
     # CPU and Memory checks
-    checks.extend(_check_cpu_memory())
+    checks.extend(_check_cpu_memory(thresholds))
     
     # Disk checks
     checks.extend(_check_disks())
@@ -25,7 +31,7 @@ def run_checks(registry: Any, nic: Optional[str] = None, pcap_duration: Optional
     checks.extend(_check_system_logs())
     
     # Thermal checks
-    checks.extend(_check_thermal())
+    checks.extend(_check_thermal(thresholds))
     
     # Packet capture analysis
     if pcap_duration and pcap_duration > 0:
@@ -34,28 +40,32 @@ def run_checks(registry: Any, nic: Optional[str] = None, pcap_duration: Optional
     return checks
 
 
-def _check_cpu_memory() -> List[Dict[str, Any]]:
+def _check_cpu_memory(thresholds: Dict[str, Any]) -> List[Dict[str, Any]]:
     """Check CPU and memory usage."""
     checks = []
+    
+    # Get CPU thresholds
+    cpu_warn = thresholds.get("cpu", {}).get("warn", 80.0)
+    cpu_fail = thresholds.get("cpu", {}).get("fail", 90.0)
     
     # CPU usage
     cpu_percent = psutil.cpu_percent(interval=1)
     cpu_count = psutil.cpu_count()
     
-    if cpu_percent > 90:
+    if cpu_percent > cpu_fail:
         severity = "fail"
-        evidence = f"CPU usage is {cpu_percent:.1f}%"
-        why = "High CPU usage can cause system instability and poor performance"
+        evidence = f"CPU usage is {cpu_percent:.1f}% (exceeds FAIL threshold of {cpu_fail}%)"
+        why = f"CPU usage {cpu_percent:.1f}% exceeds critical threshold of {cpu_fail}% - can cause system instability"
         fix = "Check for runaway processes, consider upgrading hardware, or optimize applications"
-    elif cpu_percent > 70:
+    elif cpu_percent > cpu_warn:
         severity = "warn"
-        evidence = f"CPU usage is {cpu_percent:.1f}%"
-        why = "Elevated CPU usage may impact performance"
+        evidence = f"CPU usage is {cpu_percent:.1f}% (exceeds WARN threshold of {cpu_warn}%)"
+        why = f"CPU usage {cpu_percent:.1f}% exceeds warning threshold of {cpu_warn}% - may impact performance"
         fix = "Monitor CPU usage and consider optimization"
     else:
         severity = "info"
-        evidence = f"CPU usage is {cpu_percent:.1f}%"
-        why = "CPU usage is within normal range"
+        evidence = f"CPU usage is {cpu_percent:.1f}% (within normal range)"
+        why = "CPU usage is within acceptable thresholds"
         fix = None
     
     checks.append({
@@ -430,7 +440,7 @@ def _check_system_logs() -> List[Dict[str, Any]]:
     return checks
 
 
-def _check_thermal() -> List[Dict[str, Any]]:
+def _check_thermal(thresholds: Dict[str, Any]) -> List[Dict[str, Any]]:
     """Check thermal sensors if available."""
     checks = []
     
@@ -463,23 +473,27 @@ def _check_thermal() -> List[Dict[str, Any]]:
         pass
     
     if thermal_zones:
-        max_temp = max(zone["temperature"] for zone in thermal_zones)
-        hot_zones = [zone for zone in thermal_zones if zone["temperature"] > 80]
+        # Get temperature thresholds
+        temp_warn = thresholds.get("temp_c", {}).get("warn", 85.0)
+        temp_fail = thresholds.get("temp_c", {}).get("fail", 92.0)
         
-        if max_temp > 90:
+        max_temp = max(zone["temperature"] for zone in thermal_zones)
+        hot_zones = [zone for zone in thermal_zones if zone["temperature"] > temp_warn]
+        
+        if max_temp > temp_fail:
             severity = "fail"
-            evidence = f"High temperature detected: {max_temp:.1f}°C"
-            why = "High temperatures can cause thermal throttling and hardware damage"
-            fix = "Check cooling system, clean dust, and ensure proper ventilation"
-        elif max_temp > 80:
+            evidence = f"Critical temperature: {max_temp:.1f}°C (exceeds FAIL threshold of {temp_fail}°C)"
+            why = f"Temperature {max_temp:.1f}°C exceeds critical threshold of {temp_fail}°C - risk of thermal throttling and hardware damage"
+            fix = "Immediate cooling required: check fans, clean dust, improve ventilation"
+        elif max_temp > temp_warn:
             severity = "warn"
-            evidence = f"Elevated temperature: {max_temp:.1f}°C"
-            why = "Elevated temperatures may cause performance issues"
+            evidence = f"Elevated temperature: {max_temp:.1f}°C (exceeds WARN threshold of {temp_warn}°C)"
+            why = f"Temperature {max_temp:.1f}°C exceeds warning threshold of {temp_warn}°C - may cause performance issues"
             fix = "Monitor temperatures and ensure adequate cooling"
         else:
             severity = "info"
-            evidence = f"Temperature normal: {max_temp:.1f}°C"
-            why = "Temperatures are within safe operating range"
+            evidence = f"Temperature normal: {max_temp:.1f}°C (within acceptable range)"
+            why = "Temperatures are within safe operating thresholds"
             fix = None
         
         checks.append({

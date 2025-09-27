@@ -230,10 +230,15 @@ class ReportGenerator:
             f.write(f"- **Success Rate:** {summary['success_rate']:.1f}%\n\n")
             
             # Categories
-            for category, checks in data["categories"].items():
+            for category, category_data in data["categories"].items():
                 f.write(f"## {category}\n\n")
                 
-                for check in checks:
+                # Handle new category structure with stats and checks
+                checks_list = category_data.get("checks", []) if isinstance(category_data, dict) else category_data
+                
+                for check in checks_list:
+                    if not isinstance(check, dict):
+                        continue  # Skip non-dict items
                     severity = check.get("severity", "info")
                     icon = "✅" if severity == "info" else "⚠️" if severity == "warn" else "❌"
                     

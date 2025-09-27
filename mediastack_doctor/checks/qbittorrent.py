@@ -184,14 +184,24 @@ def _check_api_auth(qb_info: Dict[str, Any]) -> List[Dict[str, Any]]:
     password = qb_info.get("password")
     
     if not username or not password:
+        missing_creds = []
+        if not username:
+            missing_creds.append("username")
+        if not password:
+            missing_creds.append("password")
+            
         checks.append({
             "id": "Q8",
             "category": "qBittorrent (inside Gluetun)",
-            "title": "API Authentication",
+            "title": "API Authentication - Missing Credentials",
             "severity": "warn",
-            "evidence": "No authentication credentials configured",
-            "why_it_matters": "Cannot test API functionality without credentials",
-            "suggested_fix": "Configure qBittorrent username and password in registry",
+            "evidence": f"Missing qBittorrent credentials: {', '.join(missing_creds)}",
+            "why_it_matters": "Cannot test qBittorrent API functionality without proper authentication",
+            "suggested_fix": [
+                "Run: mediastack-doctor registry set qbittorrent --url http://localhost:8080 --username admin",
+                "Run: mediastack-doctor registry secret set qb_password",
+                "Or use CLI flags: --qb-user admin --qb-pass yourpassword"
+            ],
         })
         return checks
     

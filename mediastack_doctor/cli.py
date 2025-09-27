@@ -192,6 +192,14 @@ def run(
     # Load registry
     registry = Registry.load()
     
+    # Check if registry has any services configured
+    if not registry._data.get("services") and not any([qb_url, qb_user, plex_token, plex_url]):
+        console.print("\n[yellow]⚠️  No services configured in registry[/yellow]")
+        console.print("[dim]Consider running:[/dim]")
+        console.print("[dim]  mediastack-doctor registry discover --save[/dim]")
+        console.print("[dim]  mediastack-doctor registry set <service> --url <url>[/dim]")
+        console.print("[dim]Or use CLI flags for quick testing[/dim]\n")
+    
     # Override registry with CLI flags
     if qb_url:
         registry.set_service_url("qbittorrent", qb_url)
@@ -302,6 +310,9 @@ def run(
                 section_checks = section_module.run_checks(registry, docker_client, netbench)
             elif section_name == "storage":
                 section_checks = section_module.run_checks(registry, docker_client, deep)
+            elif section_name == "host":
+                # Pass thresholds to host checks
+                section_checks = section_module.run_checks(registry, docker_client, thresholds=thresholds_config)
             else:
                 if docker_client is None and section_name in ["docker", "qbittorrent", "arr", "sabnzbd", "plex", "cloudflared", "overseerr", "prometheus", "tautulli"]:
                     section_checks = [{
@@ -475,7 +486,14 @@ def show_summary(checks: list, output_dir: Path, advisor_fixes: list = None) -> 
     if advisor_fixes:
         console.print("\n[bold]🔧 Advisor Recommendations[/bold]")
         for fix in advisor_fixes[:5]:  # Show top 5
-            console.print(f"• {fix}")
+            if isinstance(fix, dict):
+                # New evidence-based advisor format
+                title = fix.get('title', 'Unknown')
+                next_step = fix.get('next_step', 'No action specified')
+                console.print(f"• {title}: {next_step}")
+            else:
+                # Legacy string format
+                console.print(f"• {fix}")
         if len(advisor_fixes) > 5:
             console.print(f"... and {len(advisor_fixes) - 5} more (see report.md)")
     

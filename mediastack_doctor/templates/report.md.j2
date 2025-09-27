@@ -114,7 +114,7 @@ cat /sys/class/thermal/thermal_zone*/temp
 ```
 {% elif check.id.startswith("D2") %}
 ```bash
-docker inspect {{ check.title.split(" - ")[1] }} --format '{{json .State}}' | jq .
+docker inspect {{ check.title.split(" - ")[1] }} --format '{{ "{{json .State}}" }}' | jq .
 docker logs {{ check.title.split(" - ")[1] }} --tail 50
 ```
 {% else %}
@@ -190,7 +190,25 @@ No services configured in registry.
 The following actionable fixes are recommended based on the diagnostic results:
 
 {% for fix in advisor_fixes %}
+{% if fix is mapping %}
+- **{{ fix.get('title', 'Unknown') }}**: {{ fix.get('next_step', 'No action specified') }}
+  {% if verbose and fix.get('why') %}
+  - *Why*: {{ fix.get('why') }}
+  {% endif %}
+  {% if verbose and fix.get('evidence') %}
+  - *Evidence*: {{ fix.get('evidence') }}
+  {% endif %}
+  {% if verbose and fix.get('reproduce_commands') %}
+  - *Reproduce*:
+    {% for cmd in fix.get('reproduce_commands', []) %}
+    ```bash
+    {{ cmd }}
+    ```
+    {% endfor %}
+  {% endif %}
+{% else %}
 - {{ fix }}
+{% endif %}
 {% endfor %}
 
 {% endif %}
