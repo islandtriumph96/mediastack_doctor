@@ -368,18 +368,40 @@ def _check_configuration(qb_info: Dict[str, Any]) -> List[Dict[str, Any]]:
     container = qb_info["container"]
     network_info = qb_info["network_info"]
     
-    # Check if container is using Gluetun network
+    # Check if container is using Gluetun network (including container network mode)
     networks = network_info.get("networks", {})
     is_in_gluetun_network = any("gluetun" in net_name.lower() for net_name in networks.keys())
     
-    if is_in_gluetun_network:
+    # Also check for container network mode
+    from ..utils.docker_client import DockerClient
+    docker_client = DockerClient()
+    container_info = docker_client.inspect_container(container["name"])
+    
+    using_gluetun_network = is_in_gluetun_network
+    network_mode_info = ""
+    
+    if container_info:
+        host_config = container_info.get("HostConfig", {})
+        network_mode = host_config.get("NetworkMode", "")
+        
+        if "gluetun" in network_mode.lower():
+            using_gluetun_network = True
+            network_mode_info = f" (network_mode: {network_mode})"
+        elif network_mode.startswith("container:") or network_mode.startswith("service:"):
+            # Check if the target container is Gluetun
+            target = network_mode.split(":", 1)[1]
+            if "gluetun" in target.lower():
+                using_gluetun_network = True
+                network_mode_info = f" (network_mode: {network_mode})"
+    
+    if using_gluetun_network:
         checks.append({
             "id": "Q19",
             "category": "qBittorrent (inside Gluetun)",
             "title": "Network Configuration",
             "severity": "info",
-            "evidence": "qBittorrent is on Gluetun network",
-            "why_it_matters": "qBittorrent traffic is routed through VPN",
+            "evidence": f"qBittorrent is using Gluetun network{network_mode_info}",
+            "why_it_matters": "qBittorrent traffic is properly routed through VPN",
             "suggested_fix": None,
         })
     else:
@@ -388,7 +410,7 @@ def _check_configuration(qb_info: Dict[str, Any]) -> List[Dict[str, Any]]:
             "category": "qBittorrent (inside Gluetun)",
             "title": "Network Configuration",
             "severity": "warn",
-            "evidence": "qBittorrent is not on Gluetun network",
+            "evidence": f"qBittorrent is not using Gluetun network{network_mode_info}",
             "why_it_matters": "qBittorrent traffic may not be routed through VPN",
             "suggested_fix": "Configure qBittorrent to use Gluetun network or network_mode: service:gluetun",
         })

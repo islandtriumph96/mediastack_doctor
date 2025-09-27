@@ -16,11 +16,11 @@ def run_checks(registry: Any, docker_client: Any) -> List[Dict[str, Any]]:
         checks.append({
             "id": "P1",
             "category": "Plex",
-            "title": "Plex Container",
-            "severity": "fail",
-            "evidence": "Plex container not found",
-            "why_it_matters": "Plex media server is not running",
-            "suggested_fix": "Start Plex container",
+            "title": "Plex Server",
+            "severity": "warn",
+            "evidence": "Plex server not detected (neither container nor host service)",
+            "why_it_matters": "Cannot find Plex media server",
+            "suggested_fix": "Start Plex container or install Plex Media Server on host",
         })
         return checks
     
@@ -54,18 +54,13 @@ def _get_plex_info(registry: Any, docker_client: Any) -> Optional[Dict[str, Any]
             plex_container = container
             break
     
-    if not plex_container:
-        return None
-    
-    # Get network info
-    network_info = docker_client.get_container_network_info(plex_container["name"])
-    
-    # Determine URL
+    # Determine URL - try registry first, then container, then host default
     url = None
     if plex_service and plex_service.url:
         url = plex_service.url
-    else:
-        # Try to construct URL from container info
+    elif plex_container:
+        # Get network info from container
+        network_info = docker_client.get_container_network_info(plex_container["name"])
         ports = network_info.get("ports", {})
         for container_port, host_bindings in ports.items():
             if "32400" in container_port:
@@ -76,6 +71,9 @@ def _get_plex_info(registry: Any, docker_client: Any) -> Optional[Dict[str, Any]
                             url = f"http://localhost:{port}"
                             break
                 break
+    else:
+        # Try host-based Plex (common default)
+        url = "http://localhost:32400"
     
     if not url:
         return None
@@ -86,10 +84,11 @@ def _get_plex_info(registry: Any, docker_client: Any) -> Optional[Dict[str, Any]
         token = registry.get_secret(plex_service.token_secret_ref)
     
     return {
-        "container": plex_container,
+        "container": plex_container,  # May be None for host-based Plex
         "url": url,
         "token": token,
-        "network_info": network_info,
+        "network_info": docker_client.get_container_network_info(plex_container["name"]) if plex_container else {},
+        "host_based": plex_container is None,
     }
 
 
@@ -305,15 +304,64 @@ def _check_hardware_transcode(plex_info: Dict[str, Any], docker_client: Any) -> 
     checks = []
     
     container = plex_info.get("container")
+    host_based = plex_info.get("host_based", False)
+    
+    if host_based:
+        # Host-based Plex - check for GPU devices available on host
+        checks.append({
+            "id": "P4",
+            "category": "Plex",
+            "title": "Hardware Transcoding",
+            "severity": "info",
+            "evidence": "Plex running on host - hardware acceleration depends on host configuration",
+            "why_it_matters": "Host-based Plex can use system GPU directly",
+            "suggested_fix": "Configure hardware transcoding in Plex settings if GPU is available",
+        })
+        
+        # Check for available GPU devices on host
+        import os
+        gpu_devices = []
+        
+        # Check for Intel QSV devices
+        if os.path.exists("/dev/dri"):
+            gpu_devices.append("Intel iGPU (/dev/dri)")
+        
+        # Check for NVIDIA devices
+        if os.path.exists("/dev/nvidia0"):
+            gpu_devices.append("NVIDIA GPU (/dev/nvidia*)")
+        
+        if gpu_devices:
+            checks.append({
+                "id": "P4_HOST_GPU",
+                "category": "Plex",
+                "title": "Host GPU Devices",
+                "severity": "info",
+                "evidence": f"Available GPU devices: {', '.join(gpu_devices)}",
+                "why_it_matters": "Host has GPU devices available for hardware transcoding",
+                "suggested_fix": "Enable hardware transcoding in Plex Settings > Transcoder",
+            })
+        else:
+            checks.append({
+                "id": "P4_HOST_GPU",
+                "category": "Plex",
+                "title": "Host GPU Devices",
+                "severity": "warn",
+                "evidence": "No GPU devices detected on host",
+                "why_it_matters": "No hardware acceleration available, will use CPU transcoding",
+                "suggested_fix": "Consider adding GPU or Intel CPU with Quick Sync for better transcoding performance",
+            })
+        
+        return checks
+    
     if not container:
         checks.append({
             "id": "P4",
             "category": "Plex",
             "title": "Hardware Transcoding",
             "severity": "warn",
-            "evidence": "Plex container not found",
+            "evidence": "Plex not found (neither container nor host service responding)",
             "why_it_matters": "Cannot check hardware transcoding configuration",
-            "suggested_fix": "Ensure Plex container is running",
+            "suggested_fix": "Ensure Plex is running (container or host service)",
         })
         return checks
     

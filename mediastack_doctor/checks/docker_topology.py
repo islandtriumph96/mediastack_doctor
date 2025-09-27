@@ -44,10 +44,11 @@ def _check_container_health(docker_client: Any) -> List[Dict[str, Any]]:
         return checks
     
     # Check each container with detailed evidence
+    # Note: plex removed from expected services as it can run on host
     expected_services = {
         "gluetun", "qbittorrent", "radarr", "sonarr", "sonarr-anime", 
         "prowlarr", "sabnzbd", "unpackerr", "overseerr", "filebrowser", 
-        "cloudflared", "plex"
+        "cloudflared"
     }
     
     running_containers = set()
@@ -344,14 +345,22 @@ def _check_network_topology(docker_client: Any) -> List[Dict[str, Any]]:
             "suggested_fix": "Review network configuration for simplicity",
         })
     
-    # Check for containers without networks
+    # Check for containers without networks (but exclude those using container network mode)
     containers_without_networks = []
     for container in containers:
         container_name = container["name"]
         network_settings = container.get("network_settings", {})
         networks = network_settings.get("Networks", {})
         
-        if not networks:
+        # Check if container is using container network mode
+        container_info = docker_client.inspect_container(container_name)
+        network_mode = ""
+        if container_info:
+            host_config = container_info.get("HostConfig", {})
+            network_mode = host_config.get("NetworkMode", "")
+        
+        # Skip containers using container: or service: network mode
+        if not networks and not (network_mode.startswith("container:") or network_mode.startswith("service:")):
             containers_without_networks.append(container_name)
     
     if containers_without_networks:
@@ -486,7 +495,9 @@ def _check_port_collisions(docker_client: Any) -> List[Dict[str, Any]]:
                     host_port = binding.get("HostPort")
                     if host_port:
                         if host_port in published_ports:
-                            published_ports[host_port].append(container_name)
+                            # Avoid duplicates - only add if not already present
+                            if container_name not in published_ports[host_port]:
+                                published_ports[host_port].append(container_name)
                         else:
                             published_ports[host_port] = [container_name]
     

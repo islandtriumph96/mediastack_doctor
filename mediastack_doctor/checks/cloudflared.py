@@ -93,17 +93,45 @@ def _check_tunnel_health(cf_info: Dict[str, Any]) -> List[Dict[str, Any]]:
     docker_client = DockerClient()
     logs = docker_client.get_container_logs(container_name, since="15m")
     
-    if "tunnel is ready" in logs.lower() or "tunnel started" in logs.lower():
+    # Enhanced tunnel status detection
+    tunnel_ready_indicators = [
+        "tunnel is ready",
+        "tunnel started", 
+        "registered tunnel connection",
+        "connection registered",
+        "tunnel connection registered",
+        "serving tunnel",
+        "serving on"
+    ]
+    
+    tunnel_error_indicators = [
+        "tunnel failed",
+        "failed to register",
+        "connection failed",
+        "authentication failed",
+        "unable to connect",
+        "tunnel disconnected"
+    ]
+    
+    logs_lower = logs.lower()
+    
+    # Check for positive indicators
+    tunnel_ready = any(indicator in logs_lower for indicator in tunnel_ready_indicators)
+    
+    # Check for error indicators
+    tunnel_errors = any(indicator in logs_lower for indicator in tunnel_error_indicators)
+    
+    if tunnel_ready and not tunnel_errors:
         checks.append({
             "id": "C2",
             "category": "Overseerr / Filebrowser / Cloudflared",
             "title": "Cloudflared Tunnel Status",
             "severity": "info",
-            "evidence": "Cloudflared tunnel is ready",
+            "evidence": "Cloudflared tunnel is ready and serving",
             "why_it_matters": "Cloudflared tunnel is working properly",
             "suggested_fix": None,
         })
-    elif "tunnel failed" in logs.lower() or "error" in logs.lower():
+    elif tunnel_errors:
         checks.append({
             "id": "C3",
             "category": "Overseerr / Filebrowser / Cloudflared",
@@ -113,13 +141,24 @@ def _check_tunnel_health(cf_info: Dict[str, Any]) -> List[Dict[str, Any]]:
             "why_it_matters": "Cloudflared tunnel is not working properly",
             "suggested_fix": "Check Cloudflared configuration and tunnel credentials",
         })
+    elif "cloudflared" in logs_lower and len(logs.strip()) > 100:
+        # Container is running and producing logs, but status unclear
+        checks.append({
+            "id": "C4",
+            "category": "Overseerr / Filebrowser / Cloudflared",
+            "title": "Cloudflared Tunnel Status",
+            "severity": "info",
+            "evidence": "Cloudflared is running but tunnel status unclear from recent logs",
+            "why_it_matters": "Tunnel may be working but status is not explicitly logged",
+            "suggested_fix": "Check full logs: docker logs cloudflared --tail 100",
+        })
     else:
         checks.append({
             "id": "C4",
             "category": "Overseerr / Filebrowser / Cloudflared",
             "title": "Cloudflared Tunnel Status",
             "severity": "warn",
-            "evidence": "Cannot determine tunnel status from logs",
+            "evidence": "Cannot determine tunnel status from logs (no recent activity)",
             "why_it_matters": "Tunnel status is unclear",
             "suggested_fix": "Check Cloudflared logs: docker logs cloudflared",
         })
@@ -258,6 +297,25 @@ def _check_cloudflared_routes(cf_info: Dict[str, Any], docker_client: Any) -> Li
         
         except Exception:
             pass  # Continue with environment-based detection
+    
+    # Also try to detect routes from logs
+    logs = docker_client.get_container_logs(container_name, since="1h")
+    if logs:
+        import re
+        # Look for route patterns in logs
+        route_patterns = [
+            r'serving tunnel connection.*?hostname[=:]([^\s,]+)',
+            r'registered tunnel.*?hostname[=:]([^\s,]+)', 
+            r'tunnel.*?([a-zA-Z0-9.-]+\..*?\.com)',
+            r'serving.*?([a-zA-Z0-9.-]+\..*?\.com)'
+        ]
+        
+        for pattern in route_patterns:
+            matches = re.findall(pattern, logs, re.IGNORECASE)
+            for match in matches:
+                hostname = match.strip()
+                if hostname and hostname not in [r["hostname"] for r in routes]:
+                    routes.append({"hostname": hostname, "service": "unknown"})
     
     if not routes:
         checks.append({
