@@ -77,7 +77,7 @@ def _check_container_health(docker_client: Any) -> List[Dict[str, Any]]:
             restarting_containers.append(f"{container_name} ({restart_count} restarts)")
         
         # Create detailed check for each container
-        if not status.startswith("Up"):
+        if not (status.startswith("Up") or status == "running"):
             severity = "fail"
             evidence = f"{container_name} is {status}"
             if container_evidence.exit_code:

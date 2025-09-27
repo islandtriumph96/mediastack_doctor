@@ -628,14 +628,22 @@ class MainMenu:
 
     def _add_edit_service(self):
         """Add or edit a service configuration."""
-        if self.console and HAS_RICH:
-            service_name = Prompt.ask("Enter service name", choices=["qbittorrent", "radarr", "sonarr", "prowlarr", "plex", "overseerr"])
-        else:
-            while True:
-                service_name = input("Enter service name (qbittorrent, radarr, sonarr, prowlarr, plex, overseerr): ").strip().lower()
-                if service_name in ["qbittorrent", "radarr", "sonarr", "prowlarr", "plex", "overseerr"]:
-                    break
-                print("Invalid service name. Please try again.")
+        from .utils.menu_navigation import create_menu
+        
+        service_options = [
+            ("qbittorrent", "🌊 qBittorrent", "Torrent download client"),
+            ("radarr", "🎬 Radarr", "Movie collection manager"),
+            ("sonarr", "📺 Sonarr", "TV series collection manager"),
+            ("prowlarr", "🔍 Prowlarr", "Indexer manager"),
+            ("plex", "🎭 Plex", "Media server"),
+            ("overseerr", "📋 Overseerr", "Media request management"),
+            ("0", "⬅️ Back", "Return to registry menu")
+        ]
+        
+        service_name = create_menu("Select Service to Configure", service_options, self.console)
+        
+        if service_name == "0":
+            return
 
         # Get existing service or create new
         existing_svc = self.registry.get_service(service_name)
@@ -780,10 +788,19 @@ class MainMenu:
         # Select service to remove
         service_names = list(services.keys())
         
+        from .utils.menu_navigation import create_menu
+        
+        # Create service removal menu
+        service_options = [(name, f"🗑️ {name}", f"Remove {name} from registry") for name in service_names]
+        service_options.append(("0", "⬅️ Back", "Return to registry menu"))
+        
+        service_name = create_menu("Select Service to Remove", service_options, self.console)
+        
+        if service_name == "0":
+            return
+        
+        # Confirm removal
         if self.console and HAS_RICH:
-            from rich.prompt import Prompt
-            service_name = Prompt.ask("Select service to remove", choices=service_names)
-            
             self.console.print(f"[yellow]⚠️ This will remove '{service_name}' from the registry.[/yellow]")
             self.console.print(f"[yellow]Associated secrets will remain in keyring.[/yellow]")
             
@@ -794,20 +811,6 @@ class MainMenu:
             else:
                 self.console.print("[blue]Removal cancelled[/blue]")
         else:
-            print("Available services:")
-            for i, name in enumerate(service_names):
-                print(f"  {i+1}. {name}")
-            
-            while True:
-                try:
-                    choice = int(input("Select service number to remove: ").strip())
-                    if 1 <= choice <= len(service_names):
-                        service_name = service_names[choice - 1]
-                        break
-                    print("Invalid choice. Please try again.")
-                except ValueError:
-                    print("Please enter a number.")
-            
             print(f"⚠️ This will remove '{service_name}' from the registry.")
             print(f"Associated secrets will remain in keyring.")
             

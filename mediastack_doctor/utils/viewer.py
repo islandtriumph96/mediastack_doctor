@@ -417,35 +417,34 @@ def run_browser(outputs_path: Path) -> int:
                 print("Run 'mediastack-doctor run' to create your first diagnostic report")
             return 0
         
-        # Show available runs and let user select
-        if console and HAS_RICH:
-            console.print(f"[bold]Available diagnostic runs in {outputs_path}:[/bold]")
-            for i, run in enumerate(available_runs[:10], 1):  # Show latest 10
-                console.print(f"{i}. {run.name}")
+        # Show available runs and let user select with arrow navigation
+        from ..utils.menu_navigation import create_menu
+        
+        # Create run selection menu
+        run_options = []
+        for i, run in enumerate(available_runs[:10], 1):  # Show latest 10
+            run_options.append((str(i), f"📊 {run.name}", f"View diagnostic run from {run.name}"))
+        run_options.append(("0", "⬅️ Exit", "Exit report browser"))
+        
+        try:
+            choice = create_menu(f"Select Diagnostic Run from {outputs_path.name}", run_options, console)
             
-            try:
-                choice = IntPrompt.ask("Select a run", default=1, choices=[str(i) for i in range(1, min(len(available_runs), 10) + 1)])
-                selected_run = available_runs[choice - 1]
+            if choice == "0":
+                return 0
+            
+            choice_idx = int(choice) - 1
+            if 0 <= choice_idx < len(available_runs):
+                selected_run = available_runs[choice_idx]
                 report_path = selected_run / "report.json"
                 run_dir = selected_run
-            except (KeyboardInterrupt, EOFError):
-                return 0
-        else:
-            print(f"\nAvailable diagnostic runs in {outputs_path}:")
-            for i, run in enumerate(available_runs[:10], 1):
-                print(f"{i}. {run.name}")
-            
-            try:
-                choice = int(input("Select a run (number): ")) - 1
-                if 0 <= choice < len(available_runs):
-                    selected_run = available_runs[choice]
-                    report_path = selected_run / "report.json"
-                    run_dir = selected_run
+            else:
+                if console and HAS_RICH:
+                    console.print("[red]Invalid selection[/red]")
                 else:
                     print("Invalid selection")
-                    return 1
-            except (ValueError, KeyboardInterrupt, EOFError):
-                return 0
+                return 1
+        except (KeyboardInterrupt, EOFError):
+            return 0
     else:
         if console and HAS_RICH:
             console.print(f"[red]Invalid path: {outputs_path}[/red]")
@@ -466,40 +465,31 @@ def run_browser(outputs_path: Path) -> int:
     
     # Main menu loop
     while True:
+        from ..utils.menu_navigation import create_menu
+        
+        # Show current run info
         if console and HAS_RICH:
-            console.print("\n[bold blue]MediaStack Doctor - Report Browser[/bold blue]")
-            console.print(f"[dim]Viewing: {run_dir.name}[/dim]")
-            console.print("\n[bold]Menu:[/bold]")
-            console.print("1. Summary")
-            console.print("2. Browse categories")
-            console.print("3. Show WARN/FAIL only")
-            console.print("4. View specific check by ID")
-            console.print("5. Advisor recommendations")
-            console.print("6. Search checks by keyword")
-            console.print("7. Switch run")
-            console.print("8. Exit")
-            
-            try:
-                choice = Prompt.ask("Select option", choices=["1", "2", "3", "4", "5", "6", "7", "8"], default="1")
-            except (KeyboardInterrupt, EOFError):
-                return 0
+            console.print(f"\n[bold blue]📊 Report Browser[/bold blue]")
+            console.print(f"[dim]Viewing: {run_dir.name}[/dim]\n")
         else:
-            print("\n=== MediaStack Doctor - Report Browser ===")
-            print(f"Viewing: {run_dir.name}")
-            print("\nMenu:")
-            print("1. Summary")
-            print("2. Browse categories")
-            print("3. Show WARN/FAIL only")
-            print("4. View specific check by ID")
-            print("5. Advisor recommendations")
-            print("6. Search checks by keyword")
-            print("7. Switch run")
-            print("8. Exit")
-            
-            try:
-                choice = input("Select option (1-8): ").strip()
-            except (KeyboardInterrupt, EOFError):
-                return 0
+            print(f"\n📊 Report Browser")
+            print(f"Viewing: {run_dir.name}\n")
+        
+        browser_options = [
+            ("1", "📋 Summary", "View diagnostic summary"),
+            ("2", "📁 Browse Categories", "Explore checks by category"),
+            ("3", "⚠️ Show WARN/FAIL Only", "View only issues that need attention"),
+            ("4", "🔍 View Specific Check", "Look up a check by ID"),
+            ("5", "🔧 Advisor Recommendations", "View actionable fixes"),
+            ("6", "🔎 Search Checks", "Search checks by keyword"),
+            ("7", "🔄 Switch Run", "Select a different diagnostic run"),
+            ("8", "🚪 Exit", "Exit report browser")
+        ]
+        
+        try:
+            choice = create_menu("Report Browser Menu", browser_options, console)
+        except (KeyboardInterrupt, EOFError):
+            return 0
         
         if choice == "1":
             show_summary(data, console)
