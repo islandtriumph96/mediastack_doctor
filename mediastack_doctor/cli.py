@@ -485,17 +485,33 @@ def show_summary(checks: list, output_dir: Path, advisor_fixes: list = None) -> 
     # Show advisor fixes if available
     if advisor_fixes:
         console.print("\n[bold]🔧 Advisor Recommendations[/bold]")
-        for fix in advisor_fixes[:5]:  # Show top 5
+        for i, fix in enumerate(advisor_fixes[:5], 1):  # Show top 5
             if isinstance(fix, dict):
                 # New evidence-based advisor format
                 title = fix.get('title', 'Unknown')
+                severity = fix.get('severity', 'unknown')
+                evidence = fix.get('evidence', '')
                 next_step = fix.get('next_step', 'No action specified')
-                console.print(f"• {title}: {next_step}")
+                host_context = fix.get('host_context', '')
+                
+                # Color and icon based on severity
+                severity_icon = "❌" if severity == "fail" else "⚠️" if severity == "warn" else "ℹ️"
+                severity_color = "red" if severity == "fail" else "yellow" if severity == "warn" else "blue"
+                
+                console.print(f"[bold cyan]{i}. {severity_icon} {title}[/bold cyan]")
+                if evidence:
+                    console.print(f"   [dim]Evidence:[/dim] {evidence}")
+                console.print(f"   [{severity_color}]Action:[/{severity_color}] {next_step}")
+                
+                if host_context:
+                    console.print(f"   [yellow]{host_context}[/yellow]")
+                
+                console.print()  # Add spacing
             else:
                 # Legacy string format
                 console.print(f"• {fix}")
         if len(advisor_fixes) > 5:
-            console.print(f"... and {len(advisor_fixes) - 5} more (see report.md)")
+            console.print(f"... and {len(advisor_fixes) - 5} more (see report.md for full details)")
     
     console.print(f"\n[bold]Reports saved to:[/bold] {output_dir}")
     console.print(f"  • [link=file://{output_dir}/report.md]report.md[/link]")

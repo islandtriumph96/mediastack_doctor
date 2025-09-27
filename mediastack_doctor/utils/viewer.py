@@ -319,13 +319,75 @@ def show_advisor_recommendations(data: Dict[str, Any], console: Optional[Console
         return
     
     if console and HAS_RICH:
-        console.print("\n[bold]Advisor Recommendations[/bold]")
+        console.print("\n[bold]🔧 Advisor Recommendations[/bold]\n")
+        
         for i, rec in enumerate(recommendations, 1):
-            console.print(f"{i}. {rec}")
+            if isinstance(rec, dict):
+                # New evidence-based format
+                title = rec.get('title', 'Unknown Issue')
+                severity = rec.get('severity', 'unknown')
+                evidence = rec.get('evidence', 'No evidence available')
+                why = rec.get('why', 'No explanation available')
+                next_step = rec.get('next_step', 'No action specified')
+                reproduce_commands = rec.get('reproduce_commands', [])
+                host_context = rec.get('host_context', '')
+                
+                # Color based on severity
+                severity_color = "red" if severity == "fail" else "yellow" if severity == "warn" else "blue"
+                severity_icon = "❌" if severity == "fail" else "⚠️" if severity == "warn" else "ℹ️"
+                
+                console.print(f"[bold cyan]{i}. {severity_icon} {title}[/bold cyan]")
+                console.print(f"   [dim]Evidence:[/dim] {evidence}")
+                console.print(f"   [dim]Why:[/dim] {why}")
+                console.print(f"   [{severity_color}]Action:[/{severity_color}] {next_step}")
+                
+                if host_context:
+                    console.print(f"   [yellow]{host_context}[/yellow]")
+                
+                if reproduce_commands and len(reproduce_commands) > 0:
+                    console.print(f"   [dim]Reproduce:[/dim]")
+                    for cmd in reproduce_commands[:3]:  # Show first 3 commands
+                        if not cmd.startswith('#'):  # Skip comment lines
+                            console.print(f"     [dim]{cmd}[/dim]")
+                
+                console.print()  # Add spacing between recommendations
+            else:
+                # Legacy string format
+                console.print(f"{i}. {rec}")
     else:
-        print("\n=== Advisor Recommendations ===")
+        print("\n=== Advisor Recommendations ===\n")
+        
         for i, rec in enumerate(recommendations, 1):
-            print(f"{i}. {rec}")
+            if isinstance(rec, dict):
+                # New evidence-based format
+                title = rec.get('title', 'Unknown Issue')
+                severity = rec.get('severity', 'unknown')
+                evidence = rec.get('evidence', 'No evidence available')
+                why = rec.get('why', 'No explanation available')
+                next_step = rec.get('next_step', 'No action specified')
+                reproduce_commands = rec.get('reproduce_commands', [])
+                host_context = rec.get('host_context', '')
+                
+                severity_icon = "❌" if severity == "fail" else "⚠️" if severity == "warn" else "ℹ️"
+                
+                print(f"{i}. {severity_icon} {title}")
+                print(f"   Evidence: {evidence}")
+                print(f"   Why: {why}")
+                print(f"   Action: {next_step}")
+                
+                if host_context:
+                    print(f"   {host_context}")
+                
+                if reproduce_commands and len(reproduce_commands) > 0:
+                    print(f"   Reproduce:")
+                    for cmd in reproduce_commands[:3]:  # Show first 3 commands
+                        if not cmd.startswith('#'):  # Skip comment lines
+                            print(f"     {cmd}")
+                
+                print()  # Add spacing between recommendations
+            else:
+                # Legacy string format
+                print(f"{i}. {rec}")
 
 
 def search_checks(keyword: str, data: Dict[str, Any], console: Optional[Console] = None) -> None:
