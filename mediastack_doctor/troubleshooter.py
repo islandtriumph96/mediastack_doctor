@@ -371,7 +371,10 @@ class ServiceTroubleshooter:
                     if "ports" in container and container["ports"]:
                         f.write("- **Port Bindings:**\n")
                         for port in container["ports"]:
-                            f.write(f"  - {port.get('PrivatePort', 'N/A')}:{port.get('PublicPort', 'N/A')}\n")
+                            if isinstance(port, dict):
+                                f.write(f"  - {port.get('PrivatePort', 'N/A')}:{port.get('PublicPort', 'N/A')}\n")
+                            else:
+                                f.write(f"  - {port}\n")
 
                     if "networks" in container and container["networks"]:
                         f.write(f"- **Networks:** {', '.join(container['networks'])}\n")

@@ -61,8 +61,8 @@ class MainMenu:
                         "details": "qBittorrent WebUI authentication"
                     })
 
-            # Check Arr service API keys
-            elif service_name in ["radarr", "sonarr", "prowlarr"]:
+            # Check API key services
+            elif service_name in ["radarr", "sonarr", "prowlarr", "overseerr", "sabnzbd"]:
                 api_key_ref = service_data.get("api_key_secret_ref")
                 api_key = self.registry.get_secret(api_key_ref) if api_key_ref else None
 
@@ -164,13 +164,23 @@ class MainMenu:
                     else:
                         print(f"✅ qBittorrent credentials saved")
 
-            elif service_name in ["radarr", "sonarr", "prowlarr"]:
+            elif service_name in ["radarr", "sonarr", "prowlarr", "overseerr", "sabnzbd"]:
                 # Prompt for API key
                 if self.console and HAS_RICH:
-                    self.console.print(f"[dim]Get API key from {service_name.title()} Settings > General > Security[/dim]")
+                    if service_name == "overseerr":
+                        self.console.print(f"[dim]Get API key from {service_name.title()} Settings > General > API Key[/dim]")
+                    elif service_name == "sabnzbd":
+                        self.console.print(f"[dim]Get API key from {service_name.title()} Config > General > API Key[/dim]")
+                    else:
+                        self.console.print(f"[dim]Get API key from {service_name.title()} Settings > General > Security[/dim]")
                     api_key = Prompt.ask(f"{service_name.title()} API key", password=True)
                 else:
-                    print(f"Get API key from {service_name.title()} Settings > General > Security")
+                    if service_name == "overseerr":
+                        print(f"Get API key from {service_name.title()} Settings > General > API Key")
+                    elif service_name == "sabnzbd":
+                        print(f"Get API key from {service_name.title()} Config > General > API Key")
+                    else:
+                        print(f"Get API key from {service_name.title()} Settings > General > Security")
                     import getpass
                     api_key = getpass.getpass(f"{service_name.title()} API key: ")
 
@@ -526,6 +536,8 @@ class MainMenu:
             # Show current services first
             if self.console and HAS_RICH:
                 self.console.print("\n[bold cyan]🔧 Registry Management[/bold cyan]\n")
+                self.console.print("[dim]Registry: Advanced service management with full CRUD operations[/dim]")
+                self.console.print("[dim]Configure Services: Quick guided setup for common services[/dim]\n")
 
                 registry_table = Table(title="Current Services", show_header=True)
                 registry_table.add_column("Service", style="cyan")
@@ -637,6 +649,9 @@ class MainMenu:
             ("prowlarr", "🔍 Prowlarr", "Indexer manager"),
             ("plex", "🎭 Plex", "Media server"),
             ("overseerr", "📋 Overseerr", "Media request management"),
+            ("sabnzbd", "📦 SABnzbd", "Usenet downloader"),
+            ("gluetun", "🔒 Gluetun", "VPN client"),
+            ("cloudflared", "☁️ Cloudflared", "Tunnel service"),
             ("0", "⬅️ Back", "Return to registry menu")
         ]
         
@@ -683,7 +698,10 @@ class MainMenu:
             "sonarr": 8989,
             "prowlarr": 9696,
             "plex": 32400,
-            "overseerr": 5055
+            "overseerr": 5055,
+            "sabnzbd": 8080,
+            "gluetun": 8000,
+            "cloudflared": 2000
         }
         return ports.get(service_name, 8080)
 
@@ -1007,7 +1025,8 @@ class MainMenu:
         svc = ServiceRef(name=service_key, url=url)
         
         # Get authentication if needed
-        if needs_auth:
+        auth_required = service_name in ["qbittorrent", "radarr", "sonarr", "prowlarr", "plex", "overseerr", "sabnzbd"]
+        if auth_required:
             self._configure_service_auth(service_key, service_name, svc)
         
         # Save service
@@ -1044,26 +1063,60 @@ class MainMenu:
             
             svc.username = username
             
-        else:
-            # Arr services use API keys
+        elif service_key == "plex":
+            # Plex uses authentication token
             if self.console and HAS_RICH:
-                if Confirm.ask(f"Set API key for {service_name}?", default=True):
-                    self.console.print(f"[dim]Get API key from {service_name} Settings > General > Security[/dim]")
-                    api_key = Prompt.ask(f"{service_name} API key", password=True)
-                    if api_key:
-                        secret_ref = f"{service_key}_api_key"
-                        self.registry.set_secret(secret_ref, api_key)
-                        svc.api_key_secret_ref = secret_ref
+                if Confirm.ask(f"Set authentication token for {service_name}?", default=True):
+                    self.console.print("[dim]Get Plex token from https://plex.tv/claim[/dim]")
+                    token = Prompt.ask(f"{service_name} token", password=True)
+                    if token:
+                        secret_ref = f"{service_key}_token"
+                        self.registry.set_secret(secret_ref, token)
+                        svc.token_secret_ref = secret_ref
             else:
-                response = input(f"Set API key for {service_name}? (Y/n): ").strip().lower()
+                response = input(f"Set authentication token for {service_name}? (Y/n): ").strip().lower()
                 if response in ['', 'y', 'yes']:
-                    print(f"Get API key from {service_name} Settings > General > Security")
+                    print("Get Plex token from https://plex.tv/claim")
                     import getpass
-                    api_key = getpass.getpass(f"{service_name} API key: ")
-                    if api_key:
-                        secret_ref = f"{service_key}_api_key"
-                        self.registry.set_secret(secret_ref, api_key)
-                        svc.api_key_secret_ref = secret_ref
+                    token = getpass.getpass(f"{service_name} token: ")
+                    if token:
+                        secret_ref = f"{service_key}_token"
+                        self.registry.set_secret(secret_ref, token)
+                        svc.token_secret_ref = secret_ref
+        
+        else:
+            # Arr services and others use API keys
+            api_key_services = ["radarr", "sonarr", "prowlarr", "overseerr", "sabnzbd"]
+            
+            if service_key in api_key_services:
+                if self.console and HAS_RICH:
+                    if Confirm.ask(f"Set API key for {service_name}?", default=True):
+                        if service_key == "overseerr":
+                            self.console.print(f"[dim]Get API key from {service_name} Settings > General > API Key[/dim]")
+                        elif service_key == "sabnzbd":
+                            self.console.print(f"[dim]Get API key from {service_name} Config > General > API Key[/dim]")
+                        else:
+                            self.console.print(f"[dim]Get API key from {service_name} Settings > General > Security[/dim]")
+                        api_key = Prompt.ask(f"{service_name} API key", password=True)
+                        if api_key:
+                            secret_ref = f"{service_key}_api_key"
+                            self.registry.set_secret(secret_ref, api_key)
+                            svc.api_key_secret_ref = secret_ref
+                else:
+                    response = input(f"Set API key for {service_name}? (Y/n): ").strip().lower()
+                    if response in ['', 'y', 'yes']:
+                        if service_key == "overseerr":
+                            print(f"Get API key from {service_name} Settings > General > API Key")
+                        elif service_key == "sabnzbd":
+                            print(f"Get API key from {service_name} Config > General > API Key")
+                        else:
+                            print(f"Get API key from {service_name} Settings > General > Security")
+                        import getpass
+                        api_key = getpass.getpass(f"{service_name} API key: ")
+                        if api_key:
+                            secret_ref = f"{service_key}_api_key"
+                            self.registry.set_secret(secret_ref, api_key)
+                            svc.api_key_secret_ref = secret_ref
 
     def network_benchmarks(self):
         """Network performance testing."""
@@ -1359,25 +1412,44 @@ MAIN FEATURES:
 • Full Diagnostics: Comprehensive health check of your entire media stack
 • Quick Check: Fast system and Docker status check  
 • Browse Reports: View previous diagnostic results interactively
-• Service Config: Set up URLs, API keys, and credentials for your services
+• Configure Services: Quick guided setup for common services
+• Registry Management: Advanced service management with full control
 • System Stats: View detailed system performance information
 
 GETTING STARTED:
-1. Start with "Configure Services" to set up your media stack services
+1. Start with "Configure Services" for quick guided setup
 2. Run "Full Diagnostics" to get a complete health assessment
 3. Use "Browse Reports" to explore the results and get actionable advice
+
+CONFIGURE SERVICES vs REGISTRY MANAGEMENT:
+• Configure Services (Option 4): Quick guided setup for common services
+  - Auto-discovery from Docker containers
+  - Step-by-step credential collection
+  - Simplified workflow for beginners
+
+• Registry Management (Option 5): Advanced service management
+  - Full CRUD operations (Create, Read, Update, Delete)
+  - Manual service configuration
+  - Secret management and connectivity testing
+  - For power users who need fine control
 
 SERVICE SETUP:
 • qBittorrent: Needs username/password for API access
 • Radarr/Sonarr/Prowlarr: Need API keys from Settings > General > Security  
-• Plex: Needs authentication token for remote access checks
-• Overseerr: Usually works without authentication
+• Overseerr: API key from Settings > General > API Key (optional)
+• SABnzbd: API key from Config > General > API Key
+• Plex: Authentication token from https://plex.tv/claim
+
+CREDENTIAL PERSISTENCE:
+• Credentials are stored securely in your OS keyring
+• Registry data saved to ~/.mediastack-doctor/registry.yml
+• If prompted again, it means new services were discovered or credentials are missing
 
 TIPS:
 • Use auto-discovery to find Docker containers automatically
 • Custom thresholds can be set for CPU, temperature, and disk usage
 • Reports include specific commands to reproduce and fix issues
-• The registry stores credentials securely using your OS keyring
+• Troubleshoot Service creates diagnostic snapshots for support
 
 For more help, check the generated reports or visit the GitHub repository.
         """
