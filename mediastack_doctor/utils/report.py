@@ -32,11 +32,13 @@ class ReportGenerator:
         checks: List[Dict[str, Any]], 
         registry: Any, 
         docker_client: Any,
-        advisor_fixes: List[str] = None
+        advisor_fixes: List[str] = None,
+        verbose: bool = False,
+        thresholds: Dict[str, Any] = None
     ) -> None:
         """Generate all report formats."""
         # Prepare report data
-        report_data = self._prepare_report_data(checks, registry, docker_client, advisor_fixes)
+        report_data = self._prepare_report_data(checks, registry, docker_client, advisor_fixes, verbose, thresholds)
         
         # Generate Markdown report
         self._generate_markdown_report(report_data)
@@ -75,7 +77,9 @@ class ReportGenerator:
         checks: List[Dict[str, Any]], 
         registry: Any, 
         docker_client: Any,
-        advisor_fixes: List[str] = None
+        advisor_fixes: List[str] = None,
+        verbose: bool = False,
+        thresholds: Dict[str, Any] = None
     ) -> Dict[str, Any]:
         """Prepare data for report generation."""
         # Calculate category statistics
@@ -104,6 +108,26 @@ class ReportGenerator:
         # Get Docker info
         docker_info = self._get_docker_info(docker_client)
         
+        # Prepare thresholds info safely
+        thresholds_info = {}
+        flat_thresholds = {}
+        if thresholds and isinstance(thresholds, dict):
+            try:
+                from .thresholds import get_flat_thresholds, validate_thresholds_dict
+                if validate_thresholds_dict(thresholds):
+                    flat_thresholds = get_flat_thresholds(thresholds)
+                    thresholds_info = thresholds.copy()
+                else:
+                    # Fallback for malformed thresholds
+                    from .thresholds import DEFAULT_THRESHOLDS
+                    thresholds_info = DEFAULT_THRESHOLDS
+                    flat_thresholds = get_flat_thresholds(DEFAULT_THRESHOLDS)
+            except Exception:
+                # Ultimate fallback
+                from .thresholds import DEFAULT_THRESHOLDS, get_flat_thresholds
+                thresholds_info = DEFAULT_THRESHOLDS
+                flat_thresholds = get_flat_thresholds(DEFAULT_THRESHOLDS)
+        
         return {
             "timestamp": datetime.now().isoformat(),
             "summary": {
@@ -119,6 +143,9 @@ class ReportGenerator:
             "docker_info": docker_info,
             "registry": registry.to_redacted_dict() if registry else {},
             "advisor_fixes": advisor_fixes or [],
+            "verbose": verbose,
+            "thresholds": thresholds_info,
+            "flat_thresholds": flat_thresholds,
         }
     
     def _get_system_info(self) -> Dict[str, Any]:

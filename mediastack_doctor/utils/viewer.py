@@ -11,7 +11,7 @@ try:
     from rich.console import Console
     from rich.table import Table
     from rich.panel import Panel
-    from rich.prompt import Prompt, IntPrompt
+    from rich.prompt import Prompt, IntPrompt, Confirm
     from rich.text import Text
     from rich.columns import Columns
     HAS_RICH = True
@@ -185,7 +185,7 @@ def show_warn_fail_only(data: Dict[str, Any], console: Optional[Console] = None)
             print(f"  Evidence: {truncate_text(check.get('evidence', ''))}")
 
 
-def show_check_details(check_id: str, data: Dict[str, Any], console: Optional[Console] = None) -> None:
+def show_check_details(check_id: str, data: Dict[str, Any], console: Optional[Console] = None, verbose: bool = False) -> None:
     """Show detailed information for a specific check."""
     checks = data.get("checks", [])
     check = next((c for c in checks if c.get("id") == check_id), None)
@@ -215,6 +215,46 @@ def show_check_details(check_id: str, data: Dict[str, Any], console: Optional[Co
 {check.get('suggested_fix', 'Not available')}
 """
         
+        # Add verbose details if requested
+        if verbose and check.get("severity") in ["warn", "fail"]:
+            content += "\n[bold]Verbose Details:[/bold]\n"
+            
+            # Container evidence
+            if check.get("container_evidence"):
+                container_evidence = check["container_evidence"]
+                content += f"""
+[bold]Container Details:[/bold]
+  Status: {container_evidence.get('status', 'N/A')}
+  Health: {container_evidence.get('health_status', 'N/A')}
+  Restart Count: {container_evidence.get('restart_count', 'N/A')}
+  Exit Code: {container_evidence.get('exit_code', 'N/A')}
+  Ports: {', '.join(container_evidence.get('ports', [])) or 'None'}
+  Networks: {', '.join(container_evidence.get('networks', [])) or 'None'}
+  Volumes: {', '.join(container_evidence.get('volumes', [])) or 'None'}
+"""
+                
+                if container_evidence.get("log_errors"):
+                    content += "\n[bold]Recent Log Errors:[/bold]\n"
+                    for error in container_evidence["log_errors"]:
+                        content += f"  [red]{error}[/red]\n"
+            
+            # Reproduce commands
+            content += "\n[bold]Reproduce Commands:[/bold]\n"
+            check_id_val = check.get("id", "")
+            if check_id_val.startswith("H1"):
+                content += "  [dim]top -H -o %CPU[/dim]\n"
+                content += "  [dim]ps aux --sort=-%cpu | head -10[/dim]\n"
+            elif check_id_val.startswith("H16"):
+                content += "  [dim]sensors[/dim]\n"
+                content += "  [dim]cat /sys/class/thermal/thermal_zone*/temp[/dim]\n"
+            elif check_id_val.startswith("D2"):
+                container_name = check.get("title", "").split(" - ")[1] if " - " in check.get("title", "") else "container"
+                content += f"  [dim]docker inspect {container_name} --format '{{json .State}}' | jq .[/dim]\n"
+                content += f"  [dim]docker logs {container_name} --tail 50[/dim]\n"
+            else:
+                content += f"  [dim]# Check {check.get('title', 'Unknown')}[/dim]\n"
+                content += f"  [dim]# Evidence: {check.get('evidence', 'N/A')}[/dim]\n"
+        
         severity_color = "red" if check.get("severity") == "fail" else "yellow" if check.get("severity") == "warn" else "green"
         panel = Panel(content, title=f"Check Details: {check_id}", border_style=severity_color)
         console.print(panel)
@@ -227,6 +267,44 @@ def show_check_details(check_id: str, data: Dict[str, Any], console: Optional[Co
         print(f"\nEvidence: {check.get('evidence', 'Not available')}")
         print(f"\nWhy it matters: {check.get('why_it_matters', 'Not available')}")
         print(f"\nSuggested fix: {check.get('suggested_fix', 'Not available')}")
+        
+        # Show verbose details if requested
+        if verbose and check.get("severity") in ["warn", "fail"]:
+            print(f"\nVerbose Details:")
+            
+            # Container evidence
+            if check.get("container_evidence"):
+                container_evidence = check["container_evidence"]
+                print(f"Container Details:")
+                print(f"  Status: {container_evidence.get('status', 'N/A')}")
+                print(f"  Health: {container_evidence.get('health_status', 'N/A')}")
+                print(f"  Restart Count: {container_evidence.get('restart_count', 'N/A')}")
+                print(f"  Exit Code: {container_evidence.get('exit_code', 'N/A')}")
+                print(f"  Ports: {', '.join(container_evidence.get('ports', [])) or 'None'}")
+                print(f"  Networks: {', '.join(container_evidence.get('networks', [])) or 'None'}")
+                print(f"  Volumes: {', '.join(container_evidence.get('volumes', [])) or 'None'}")
+                
+                if container_evidence.get("log_errors"):
+                    print(f"Recent Log Errors:")
+                    for error in container_evidence["log_errors"]:
+                        print(f"  {error}")
+            
+            # Reproduce commands
+            print(f"\nReproduce Commands:")
+            check_id_val = check.get("id", "")
+            if check_id_val.startswith("H1"):
+                print("  top -H -o %CPU")
+                print("  ps aux --sort=-%cpu | head -10")
+            elif check_id_val.startswith("H16"):
+                print("  sensors")
+                print("  cat /sys/class/thermal/thermal_zone*/temp")
+            elif check_id_val.startswith("D2"):
+                container_name = check.get("title", "").split(" - ")[1] if " - " in check.get("title", "") else "container"
+                print(f"  docker inspect {container_name} --format '{{json .State}}' | jq .")
+                print(f"  docker logs {container_name} --tail 50")
+            else:
+                print(f"  # Check {check.get('title', 'Unknown')}")
+                print(f"  # Evidence: {check.get('evidence', 'N/A')}")
 
 
 def show_advisor_recommendations(data: Dict[str, Any], console: Optional[Console] = None) -> None:
@@ -432,9 +510,12 @@ def run_browser(outputs_path: Path) -> int:
         elif choice == "4":
             if console and HAS_RICH:
                 check_id = Prompt.ask("Enter check ID")
+                verbose = Confirm.ask("Show verbose details?", default=False)
             else:
                 check_id = input("Enter check ID: ").strip()
-            show_check_details(check_id, data, console)
+                verbose_input = input("Show verbose details? (y/N): ").strip().lower()
+                verbose = verbose_input in ['y', 'yes']
+            show_check_details(check_id, data, console, verbose)
         elif choice == "5":
             show_advisor_recommendations(data, console)
         elif choice == "6":

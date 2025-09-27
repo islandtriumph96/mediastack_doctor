@@ -2,7 +2,10 @@
 
 **Generated:** {{ timestamp }}  
 **Host:** {{ system_info.hostname }}  
-**Platform:** {{ system_info.platform }}
+**Platform:** {{ system_info.platform }}  
+{% if verbose %}**Mode:** Verbose (detailed evidence shown)  
+{% endif %}{% if flat_thresholds %}**Thresholds:** CPU WARN={{ flat_thresholds.cpu_warn | default(80) }}% FAIL={{ flat_thresholds.cpu_fail | default(90) }}%, TEMP WARN={{ flat_thresholds.temp_c_warn | default(85) }}°C FAIL={{ flat_thresholds.temp_c_fail | default(92) }}°C, DISK WARN={{ flat_thresholds.disk_pct_warn | default(85) }}% FAIL={{ flat_thresholds.disk_pct_fail | default(95) }}%  
+{% endif %}
 
 ## Executive Summary
 
@@ -79,6 +82,48 @@ The following issues should be addressed:
 **Evidence:** {{ check.evidence }}
 
 **Why it matters:** {{ check.why_it_matters }}
+
+{% if verbose and check.severity in ["warn", "fail"] %}
+{% if check.container_evidence %}
+**Container Details:**
+- Status: {{ check.container_evidence.status }}
+- Health: {{ check.container_evidence.health_status or "N/A" }}
+- Restart Count: {{ check.container_evidence.restart_count }}
+- Exit Code: {{ check.container_evidence.exit_code or "N/A" }}
+- Ports: {{ check.container_evidence.ports|join(", ") or "None" }}
+- Networks: {{ check.container_evidence.networks|join(", ") or "None" }}
+- Volumes: {{ check.container_evidence.volumes|join(", ") or "None" }}
+{% if check.container_evidence.log_errors %}
+**Recent Log Errors:**
+{% for error in check.container_evidence.log_errors %}
+- {{ error }}
+{% endfor %}
+{% endif %}
+{% endif %}
+
+**Reproduce Commands:**
+{% if check.id.startswith("H1") %}
+```bash
+top -H -o %CPU
+ps aux --sort=-%cpu | head -10
+```
+{% elif check.id.startswith("H16") %}
+```bash
+sensors
+cat /sys/class/thermal/thermal_zone*/temp
+```
+{% elif check.id.startswith("D2") %}
+```bash
+docker inspect {{ check.title.split(" - ")[1] }} --format '{{json .State}}' | jq .
+docker logs {{ check.title.split(" - ")[1] }} --tail 50
+```
+{% else %}
+```bash
+# Check {{ check.title }}
+# Evidence: {{ check.evidence }}
+```
+{% endif %}
+{% endif %}
 
 {% if check.suggested_fix %}
 **Suggested fix:**

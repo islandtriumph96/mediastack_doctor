@@ -26,7 +26,7 @@ def run_checks(registry: Any, docker_client: Any) -> List[Dict[str, Any]]:
 
 
 def _check_container_health(docker_client: Any) -> List[Dict[str, Any]]:
-    """Check container health and status."""
+    """Check container health and status with detailed evidence."""
     checks = []
     
     containers = docker_client.list_containers()
@@ -43,7 +43,7 @@ def _check_container_health(docker_client: Any) -> List[Dict[str, Any]]:
         })
         return checks
     
-    # Check each container
+    # Check each container with detailed evidence
     expected_services = {
         "gluetun", "qbittorrent", "radarr", "sonarr", "sonarr-anime", 
         "prowlarr", "sabnzbd", "unpackerr", "overseerr", "filebrowser", 
@@ -61,6 +61,9 @@ def _check_container_health(docker_client: Any) -> List[Dict[str, Any]]:
         
         running_containers.add(container_name)
         
+        # Collect detailed evidence for each container
+        container_evidence = _collect_container_evidence(container_name, docker_client)
+        
         # Check health status
         health = state.get("Health", {})
         if health:
@@ -73,17 +76,49 @@ def _check_container_health(docker_client: Any) -> List[Dict[str, Any]]:
         if restart_count > 5:
             restarting_containers.append(f"{container_name} ({restart_count} restarts)")
         
-        # Check if container is running
+        # Create detailed check for each container
         if not status.startswith("Up"):
-            checks.append({
-                "id": f"D2_{container_name}",
-                "category": "Docker Topology",
-                "title": f"Container Status - {container_name}",
-                "severity": "fail",
-                "evidence": f"{container_name} is {status}",
-                "why_it_matters": "Container is not running properly",
-                "suggested_fix": f"Check logs and restart {container_name}: docker logs {container_name}",
-            })
+            severity = "fail"
+            evidence = f"{container_name} is {status}"
+            if container_evidence.exit_code:
+                evidence += f" (ExitCode: {container_evidence.exit_code})"
+            if container_evidence.restart_count > 0:
+                evidence += f" (RestartCount: {container_evidence.restart_count})"
+        else:
+            if container_evidence.health_status == "unhealthy":
+                severity = "fail"
+                evidence = f"{container_name} is running but unhealthy"
+            elif container_evidence.restart_count > 1:
+                severity = "warn"
+                evidence = f"{container_name} is running but has restarted {container_evidence.restart_count} times"
+            else:
+                severity = "info"
+                evidence = f"{container_name} is running and healthy"
+        
+        # Add container evidence to the check
+        check_data = {
+            "id": f"D2_{container_name.replace('-', '_').replace(':', '_')}",
+            "category": "Docker Topology",
+            "title": f"Container Status - {container_name}",
+            "severity": severity,
+            "evidence": evidence,
+            "why_it_matters": "Container status affects service availability",
+            "suggested_fix": f"Check logs and restart {container_name}: docker logs {container_name}",
+            "container_evidence": {
+                "name": container_evidence.name,
+                "status": container_evidence.status,
+                "health_status": container_evidence.health_status,
+                "restart_count": container_evidence.restart_count,
+                "exit_code": container_evidence.exit_code,
+                "started_at": container_evidence.started_at,
+                "ports": container_evidence.ports,
+                "networks": container_evidence.networks,
+                "volumes": container_evidence.volumes,
+                "log_errors": container_evidence.log_errors
+            }
+        }
+        
+        checks.append(check_data)
     
     # Check for missing expected services
     missing_services = expected_services - running_containers
@@ -123,6 +158,111 @@ def _check_container_health(docker_client: Any) -> List[Dict[str, Any]]:
         })
     
     return checks
+
+
+def _collect_container_evidence(container_name: str, docker_client: Any) -> 'ContainerEvidence':
+    """Collect detailed evidence from container inspection."""
+    from ..utils.advisor_rules import ContainerEvidence
+    
+    try:
+        # Get detailed container info
+        container_info = docker_client.inspect_container(container_name)
+        if not container_info:
+            return ContainerEvidence(
+                name=container_name,
+                status="unknown",
+                health_status=None,
+                restart_count=0,
+                exit_code=None,
+                started_at=None,
+                ports=[],
+                networks=[],
+                volumes=[],
+                log_errors=[]
+            )
+        
+        # Extract state information
+        state = container_info.get("State", {})
+        health = state.get("Health", {})
+        
+        # Get restart count
+        restart_count = state.get("RestartCount", 0)
+        
+        # Get exit code
+        exit_code = state.get("ExitCode")
+        
+        # Get started time
+        started_at = state.get("StartedAt")
+        
+        # Get health status
+        health_status = health.get("Status") if health else None
+        
+        # Get port mappings
+        ports = []
+        port_bindings = container_info.get("NetworkSettings", {}).get("PortBindings", {})
+        for container_port, host_bindings in port_bindings.items():
+            if host_bindings:
+                for binding in host_bindings:
+                    host_ip = binding.get("HostIp", "0.0.0.0")
+                    host_port = binding.get("HostPort", "")
+                    ports.append(f"{host_ip}:{host_port}→{container_port}")
+        
+        # Get networks
+        networks = []
+        network_settings = container_info.get("NetworkSettings", {})
+        for network_name, network_info in network_settings.get("Networks", {}).items():
+            ip_address = network_info.get("IPAddress", "")
+            networks.append(f"{network_name}({ip_address})")
+        
+        # Get volume mounts
+        volumes = []
+        mounts = container_info.get("Mounts", [])
+        for mount in mounts:
+            source = mount.get("Source", "")
+            destination = mount.get("Destination", "")
+            volumes.append(f"{source}→{destination}")
+        
+        # Get recent log errors
+        log_errors = []
+        try:
+            logs = docker_client.get_container_logs(container_name, since="2m")
+            if logs:
+                error_keywords = ["error", "fatal", "panic", "traceback", "oom-kill", "timeout"]
+                for line in logs.split('\n')[-50:]:  # Last 50 lines
+                    if any(keyword in line.lower() for keyword in error_keywords):
+                        log_errors.append(line.strip()[:100])  # Truncate long lines
+                        if len(log_errors) >= 3:  # Limit to 3 errors
+                            break
+        except Exception:
+            pass  # Ignore log collection errors
+        
+        return ContainerEvidence(
+            name=container_name,
+            status=state.get("Status", "unknown"),
+            health_status=health_status,
+            restart_count=restart_count,
+            exit_code=exit_code,
+            started_at=started_at,
+            ports=ports,
+            networks=networks,
+            volumes=volumes,
+            log_errors=log_errors
+        )
+        
+    except Exception as e:
+        # Return minimal evidence on error
+        return ContainerEvidence(
+            name=container_name,
+            status="error",
+            health_status=None,
+            restart_count=0,
+            exit_code=None,
+            started_at=None,
+            ports=[],
+            networks=[],
+            volumes=[],
+            log_errors=[f"Error collecting evidence: {str(e)}"]
+        )
 
 
 def _check_network_topology(docker_client: Any) -> List[Dict[str, Any]]:

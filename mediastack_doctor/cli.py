@@ -149,6 +149,16 @@ def cli_group(
     default=False,
     help="Run deep checks (SMART, I/O latency, etc.)",
 )
+@click.option(
+    "--verbose", "--why",
+    is_flag=True,
+    help="Show detailed evidence and reproduce commands",
+)
+@click.option(
+    "--thresholds",
+    type=click.Path(path_type=Path),
+    help="Path to thresholds configuration file",
+)
 @click.pass_context
 def run(
     ctx: click.Context,
@@ -166,6 +176,8 @@ def run(
     sections: Optional[str],
     netbench: str,
     deep: bool,
+    verbose: bool,
+    thresholds: Optional[Path],
 ) -> None:
     """Run comprehensive diagnostics on the media stack."""
     output_dir = ctx.obj["output_dir"]
@@ -307,6 +319,25 @@ def run(
             all_checks.extend(section_checks)
             progress.update(task, description=f"✓ {section_name} checked")
     
+    # Load thresholds with robust error handling
+    from .utils.thresholds import load_thresholds, DEFAULT_THRESHOLDS, ThresholdsError
+    
+    thresholds_input = str(thresholds) if thresholds else None
+    try:
+        thresholds_config = load_thresholds(thresholds_input)
+        if thresholds:
+            console.print(f"[blue]✓ Loaded thresholds from {thresholds}[/blue]")
+        if verbose:
+            console.print(f"[dim]Active thresholds: {thresholds_config}[/dim]")
+    except ThresholdsError as e:
+        console.print(f"[red]Thresholds error:[/red] {e}")
+        console.print("[yellow]Falling back to default thresholds.[/yellow]")
+        thresholds_config = DEFAULT_THRESHOLDS
+    except Exception as e:
+        console.print(f"[red]Unexpected error loading thresholds:[/red] {e}")
+        console.print("[yellow]Falling back to default thresholds.[/yellow]")
+        thresholds_config = DEFAULT_THRESHOLDS
+    
     # Generate reports
     console.print("\n[bold]Generating reports...[/bold]")
     if HAS_REPORT:
@@ -315,24 +346,49 @@ def run(
         console.print("[yellow]Warning: Report generation not available[/yellow]")
         report_generator = None
     
-    # Handle advisor mode
+    # Handle advisor mode with evidence-based logic
     advisor_fixes = []
     if advisor:
-        from .utils.advisor import generate_advisor_fixes
-        advisor_fixes = generate_advisor_fixes(all_checks)
+        from .utils.advisor_rules import generate_evidence_based_fixes
+        
+        # Collect container evidence for advisor
+        container_evidence_map = {}
+        if docker_client:
+            try:
+                containers = docker_client.list_containers()
+                for container in containers:
+                    container_name = container["name"]
+                    from .checks.docker_topology import _collect_container_evidence
+                    container_evidence_map[container_name] = _collect_container_evidence(container_name, docker_client)
+            except Exception:
+                pass  # Ignore evidence collection errors
+        
+        try:
+            advisor_fixes = generate_evidence_based_fixes(all_checks, container_evidence_map, thresholds_config, verbose)
+        except Exception as e:
+            console.print(f"[red]Error generating advisor recommendations:[/red] {e}")
+            advisor_fixes = []
     
     # Generate reports with advisor and diff support
     if report_generator:
-        report_generator.generate_reports(all_checks, registry, docker_client, advisor_fixes)
+        report_generator.generate_reports(all_checks, registry, docker_client, advisor_fixes, verbose, thresholds_config)
         # Save run manifest for diffing
         report_generator.save_run_manifest(timestamp, all_checks)
     else:
         # Fallback: just save a simple JSON report
         import json
+        from .utils.thresholds import get_flat_thresholds
+        
+        try:
+            flat_thresholds = get_flat_thresholds(thresholds_config)
+        except Exception:
+            flat_thresholds = {}
+        
         simple_report = {
             "timestamp": timestamp,
             "checks": all_checks,
-            "advisor_fixes": advisor_fixes
+            "advisor_fixes": advisor_fixes,
+            "thresholds": flat_thresholds
         }
         json_path = run_dir / "report.json"
         with open(json_path, "w") as f:

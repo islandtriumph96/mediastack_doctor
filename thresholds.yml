@@ -1,0 +1,27 @@
+# MediaStack Doctor Thresholds Configuration
+# Adjust these values based on your system's capabilities and requirements
+
+# CPU Usage Thresholds (%)
+cpu:
+  warn: 80.0
+  fail: 90.0
+
+# Temperature Thresholds (°C)
+temp_c:
+  warn: 85.0
+  fail: 92.0
+
+# Disk Usage Thresholds (%)
+disk_pct:
+  warn: 85.0
+  fail: 95.0
+
+# Memory Usage Thresholds (%) - for future use
+memory:
+  warn: 85.0
+  fail: 95.0
+
+# Network Latency Thresholds (ms) - for future use
+network:
+  warn: 100.0
+  fail: 500.0
