@@ -1,0 +1,250 @@
+# =====================================================================
+# Cursor Rules — mediastack-doctor
+# Purpose: Guide Claude/ChatGPT to build a non-destructive diagnostics
+# tool for a Docker + VPN (Gluetun/PIA) + Plex/Arr stack on Pop!_OS.
+# =====================================================================
+
+project:
+  name: mediastack-doctor
+  mission: >
+    Build a Python 3.11 CLI that audits host, Docker topology, Gluetun/PIA,
+    qBittorrent (inside Gluetun), Arrs, SABnzbd, Overseerr, Cloudflared,
+    and Plex; then outputs Markdown+JSON reports and a redacted support bundle
+    with actionable fixes. Absolutely NO system mutation by default.
+
+non_goals:
+  - Making changes to docker-compose, iptables, or filesystems automatically.
+  - Exfiltrating data, sending telemetry, or calling third-party APIs by default.
+  - Acting as a long-running agent or watchdog (CLI only, one-shot runs).
+
+target_env:
+  os: Pop!_OS / Ubuntu
+  python: "3.11"
+  shells: [bash]
+  docker: required
+  network: LAN with Cloudflared tunnel; qBittorrent behind Gluetun/PIA
+
+stack:
+  language: python
+  libs:
+    core: [rich, psutil, requests, pyyaml, jinja2]
+    docker: ["docker (Docker SDK)", "subprocess fallback to `docker` CLI"]
+    secrets: [keyring]
+    optional: [platformdirs, humanfriendly]
+  packaging: pipx-friendly module with `python -m mediastack_doctor`
+
+security_secrets:
+  rules:
+    - Secrets (API keys, tokens, passwords) are NEVER printed in full.
+    - Use OS keyring via `keyring` (service name: "mediastack-doctor").
+    - Redaction format: "****" + last 4 chars when length >= 8, else "****".
+    - Registry file: ~/.mediastack-doctor/registry.yml (redacted on output).
+    - Support bundle must redact tokens, domains (optional), and IPs if `--paranoid`.
+    - No outbound network calls unless user passes explicit flags (e.g., `--allow-external-checks`).
+
+io_policy:
+  read_only_by_default: true
+  writes_allowed:
+    - outputs/ timestamped artifacts (report.md, report.json, support_bundle.tar.gz)
+    - ~/.mediastack-doctor/registry.yml (on explicit registry commands)
+  destructive_ops: forbidden
+  sudo: forbidden (unless user explicitly requests; still avoid mutations)
+
+directory_structure:
+  required:
+    - mediastack_doctor/
+    - mediastack_doctor/checks/
+    - mediastack_doctor/utils/
+    - mediastack_doctor/templates/
+    - tests/
+  files:
+    - mediastack_doctor/__init__.py
+    - mediastack_doctor/cli.py
+    - mediastack_doctor/registry.py
+    - mediastack_doctor/checks/{host.py,docker_topology.py,gluetun.py,qbittorrent.py,arr.py,sabnzbd.py,overseerr.py,cloudflared.py,plex.py}
+    - mediastack_doctor/utils/{docker_client.py,fs.py,net.py,report.py,redact.py,shell.py}
+    - mediastack_doctor/templates/report.md.j2
+    - pyproject.toml
+    - README.md
+    - LICENSE
+    - .cursorrules (this file)
+    - .editorconfig
+    - .gitignore
+    - tests/test_registry.py
+    - tests/test_checks_smoke.py
+
+coding_standards:
+  style: pep8
+  typing: "from __future__ import annotations" + typing for all public funcs
+  docstrings: Google-style
+  errors:
+    - Fail soft: collect exceptions as evidence; never crash whole run.
+    - Each check returns a structured result with severity and suggested fixes.
+  logging:
+    - Use rich console for CLI; write machine logs to outputs dir.
+  performance:
+    - Default run <= 60s; allow `--fast` and `--deep` modes.
+    - Avoid blocking network probes > 2s each unless `--deep`.
+
+cli_contract:
+  entrypoint: python -m mediastack_doctor
+  flags:
+    - --output-dir
+    - --fast | --deep
+    - --pcap <seconds> [requires sudo; optional; summarize top talkers]
+    - --allow-external-checks (for port-forward reachability/DNS leak)
+    - --paranoid (extra redactions)
+    - --nic <iface>
+    - --sections <comma-separated ids> (run subset of checks)
+  subcommands:
+    - registry set|get|discover|validate|secret
+    - doctor run (default)
+    - bundle create (repackage logs without running checks)
+
+service_registry:
+  precedence: [CLI/env, registry.yml, .env, docker discovery]
+  schema_min:
+    services:
+      qbittorrent: {url, port, username, password_secret_ref}
+      radarr: {url, api_key_secret_ref}
+      sonarr: {url, api_key_secret_ref}
+      sonarr_anime: {url, api_key_secret_ref}
+      prowlarr: {url, api_key_secret_ref}
+      sabnzbd: {url, api_key_secret_ref}
+      overseerr: {url, api_key_secret_ref}
+      plex: {url, token_secret_ref}
+      cloudflared: {metrics_url}
+      gluetun: {container}
+    secrets: [{id}]
+  behaviors:
+    - `registry discover` uses Docker inspect to propose URLs & mapped ports.
+    - `registry validate` pings each service with stored creds; records statuses.
+    - All checks query the Registry first; degrade gracefully if missing.
+
+checks_framework:
+  result_shape:
+    id: "A1"            # unique
+    title: str
+    severity: ["info","warn","fail"]
+    evidence: str
+    why: str
+    suggested_fix: [str] # actionable steps/snippets
+    refs: [str]          # optional links or doc notes
+  sections_order: [host, docker_topology, gluetun, qbittorrent, arr, sabnzbd, overseerr, cloudflared, plex]
+  must_have_checks:
+    host:   [H1,H2,H3,H4,H5,H6]
+    docker: [D1,D2,D3,D4]
+    gluetun:[G1,G2,G3,G4]
+    qb:     [Q1,Q2,Q3,Q4]
+    arr:    [A1,A2,A3,A4,A5]
+    sab:    [S1,S2]
+    over:   [O1]
+    cf:     [C1,C2]
+    plex:   [P1,P2,P3]
+
+reporting:
+  outputs:
+    - report.md (human)
+    - report.json (machine)
+    - support_bundle.tar.gz (sanitized)
+  template: mediastack_doctor/templates/report.md.j2
+  summary_table: required (✔/⚠/✖ per check)
+  advisor_mode:
+    - Provide concrete, copy-pasteable fixes (compose/env snippets, firewall examples)
+    - Never apply changes automatically
+
+git_conventions:
+  branch: feat/*, fix/*, chore/*, docs/*
+  commits:
+    style: conventional
+    examples:
+      - feat(checks): add Arr↔qBit connectivity test (A1) with Docker gateway fallback
+      - fix(registry): redact secrets in JSON export
+      - chore(ci): add pytest + flake8 workflow
+  prs:
+    checklist:
+      - [ ] Tests added/updated
+      - [ ] No secrets in diffs
+      - [ ] Run `doctor run --fast` locally and attach summary table
+      - [ ] README/docs updated
+
+agent_workflow:
+  steps:
+    - Read this file; confirm constraints (no mutation by default).
+    - Generate scaffolding exactly as per directory_structure.
+    - Implement Registry (load/save, keyring, redaction, discovery stub).
+    - Implement CLI: `doctor run` and `registry` subcommands (click or argparse).
+    - Implement Host & Docker checks first, then Gluetun & qBittorrent, then Arr/SAB.
+    - Create Jinja2 MD template and write Report/JSON emitters.
+    - Add unit tests for Registry and a smoke test for checks (mock Docker).
+    - Provide sample output in README.
+  do_not:
+    - Hardcode user tokens, IPs, or domains.
+    - Change system config, iptables, or docker networks.
+    - Fetch internet resources unless `--allow-external-checks`.
+
+test_plan:
+  unit:
+    - tests/test_registry.py: save/load, keyring stubs, redaction
+    - tests/test_checks_smoke.py: mock docker + fake endpoints, ensure pass/warn/fail paths
+  integration:
+    - local Docker mock: spin minimal containers (optional)
+  acceptance:
+    - baseline run on host w/o creds → no crash, WARNs with suggested `registry set` cmds
+  tools: pytest, pytest-mock
+
+runbook:
+  quickstart:
+    - python -m pip install -e .
+    - python -m mediastack_doctor registry discover
+    - python -m mediastack_doctor registry set qbittorrent --url http://LAN_IP:8081 --username admin --password-secret-ref qb_pass
+    - python -m mediastack_doctor registry secret set qb_pass
+    - python -m mediastack_doctor doctor run --fast --output-dir ./outputs
+  deep_dive:
+    - python -m mediastack_doctor doctor run --deep --allow-external-checks
+
+quality_bar_definition_of_done:
+  - CLI runs on Pop!_OS with Python 3.11
+  - Produces report.md + report.json with ✔/⚠/✖ table
+  - At least Host/Docker/Gluetun/qBit/Arr checks implemented
+  - Registry persists endpoints and secrets with keyring
+  - Redaction verified in all outputs and bundle
+  - Tests green; linters clean
+
+editor:
+  formatting: black
+  lint: flake8
+  isort: true
+  mypy: permissive for first pass (no fail build)
+
+prompts_for_models:
+  system_prompt: >
+    You are a Senior DevOps/SRE/Network engineer. Produce secure, non-destructive,
+    production-quality Python 3.11 code. Prefer clarity and defensive coding.
+    All outputs must respect redaction/secrets policies and this .cursorrules.
+  dev_instructions: >
+    Adhere to checks framework and directory layout. Prefer explicit errors turned
+    into WARN/FAIL evidence. Use `rich` for friendly CLI and `jinja2` for MD.
+
+risk_flags_to_watch:
+  - Path mismatches between containers (/downloads vs /data)
+  - qBit behind Gluetun not reachable from Arrs (firewall/Docker gateway)
+  - PIA port-forward unstable
+  - Disk nearly full (especially /mnt/PLEX22TB)
+  - GPU resets (i915), thermal throttling
+  - Exposed admin ports to 0.0.0.0
+
+snippets_library:
+  gluetun_allow_subnets: |
+    # Example docker-compose env
+    FIREWALL_INPUT_SUBNETS=172.17.0.0/16,192.168.0.0/16
+  pf_regions_note: |
+    # PIA PF often stable in CA Montreal/Toronto; verify provider updates before relying.
+
+license:
+  default: MIT
+---
+description:
+globs:
+alwaysApply: true
+---

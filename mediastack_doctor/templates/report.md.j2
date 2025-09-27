@@ -1,0 +1,188 @@
+# MediaStack Doctor Report
+
+**Generated:** {{ timestamp }}  
+**Host:** {{ system_info.hostname }}  
+**Platform:** {{ system_info.platform }}
+
+## Executive Summary
+
+| Metric | Value |
+|--------|-------|
+| **Total Checks** | {{ summary.total }} |
+| **Passed** | {{ summary.passed }} ✅ |
+| **Warnings** | {{ summary.warnings }} ⚠️ |
+| **Failed** | {{ summary.failed }} ❌ |
+| **Success Rate** | {{ "%.1f"|format(summary.success_rate) }}% |
+
+## Checks by Category
+
+| Category | Total | Passed | Warnings | Failed |
+|---|---:|---:|---:|---:|
+{% for cat, payload in categories.items() %}
+{% set stats = payload.stats if payload.stats is defined else None %}
+{% if not stats %}
+  {# Fallback compute #}
+  {% set total = payload.checks|length %}
+  {% set passed = payload.checks|selectattr('severity','equalto','info')|list|length %}
+  {% set warnings = payload.checks|selectattr('severity','equalto','warn')|list|length %}
+  {% set failed = payload.checks|selectattr('severity','equalto','fail')|list|length %}
+{% else %}
+  {% set total = stats.total %}
+  {% set passed = stats.passed %}
+  {% set warnings = stats.warnings %}
+  {% set failed = stats.failed %}
+{% endif %}
+| {{ cat }} | {{ total }} | {{ passed }} | {{ warnings }} | {{ failed }} |
+{% endfor %}
+
+{% if summary.failed > 0 %}
+## 🚨 Critical Issues
+
+The following issues require immediate attention:
+
+{% for check in checks %}
+{% if check.severity == "fail" %}
+- **{{ check.title }}** ({{ check.id }})
+  - *Evidence:* {{ check.evidence }}
+  - *Impact:* {{ check.why_it_matters }}
+  - *Fix:* {{ check.suggested_fix }}
+{% endif %}
+{% endfor %}
+
+{% endif %}
+
+{% if summary.warnings > 0 %}
+## ⚠️ Warnings
+
+The following issues should be addressed:
+
+{% for check in checks %}
+{% if check.severity == "warn" %}
+- **{{ check.title }}** ({{ check.id }})
+  - *Evidence:* {{ check.evidence }}
+  - *Impact:* {{ check.why_it_matters }}
+  - *Fix:* {{ check.suggested_fix }}
+{% endif %}
+{% endfor %}
+
+{% endif %}
+
+## Detailed Results
+
+{% for category, payload in categories.items() %}
+### {{ category }}
+
+{% set category_checks = payload.checks if payload.checks is defined else payload %}
+{% for check in category_checks %}
+#### {% if check.severity == "info" %}✅{% elif check.severity == "warn" %}⚠️{% else %}❌{% endif %} {{ check.title }} ({{ check.id }})
+
+**Evidence:** {{ check.evidence }}
+
+**Why it matters:** {{ check.why_it_matters }}
+
+{% if check.suggested_fix %}
+**Suggested fix:**
+{% if check.suggested_fix is string %}
+{{ check.suggested_fix }}
+{% else %}
+{% for fix in check.suggested_fix %}
+- {{ fix }}
+{% endfor %}
+{% endif %}
+{% endif %}
+
+{% endfor %}
+
+{% endfor %}
+
+## System Information
+
+### Host System
+- **Hostname:** {{ system_info.hostname }}
+- **Platform:** {{ system_info.platform }}
+- **Python Version:** {{ system_info.python_version }}
+- **CPU Cores:** {{ system_info.cpu_count }}
+- **Total Memory:** {{ "%.1f"|format(system_info.memory_total / (1024**3)) }} GB
+
+### Disk Usage
+{% for mount, usage in system_info.disk_usage.items() %}
+- **{{ mount }}:** {{ "%.1f"|format(usage.used / (1024**3)) }} GB used / {{ "%.1f"|format(usage.total / (1024**3)) }} GB total ({{ "%.1f"|format((usage.used / usage.total) * 100) }}%)
+{% endfor %}
+
+### Docker Information
+- **Container Count:** {{ docker_info.container_count }}
+- **Network Count:** {{ docker_info.network_count }}
+
+#### Running Containers
+{% for container in docker_info.containers %}
+- **{{ container.name }}** ({{ container.image }}) - {{ container.status }}
+{% endfor %}
+
+#### Networks
+{% for network in docker_info.networks %}
+- **{{ network.name }}** ({{ network.driver }}, {{ network.scope }})
+{% endfor %}
+
+## Service Registry
+
+{% if registry.services %}
+The following services are configured in the registry:
+
+{% for service_name, service_config in registry.services.items() %}
+### {{ service_name }}
+{% for key, value in service_config.items() %}
+- **{{ key.replace('_', ' ').title() }}:** {{ value }}
+{% endfor %}
+
+{% endfor %}
+{% else %}
+No services configured in registry.
+{% endif %}
+
+{% if advisor_fixes %}
+## 🔧 Advisor Recommendations
+
+The following actionable fixes are recommended based on the diagnostic results:
+
+{% for fix in advisor_fixes %}
+- {{ fix }}
+{% endfor %}
+
+{% endif %}
+
+## Recommendations
+
+Based on the diagnostic results, here are the recommended actions:
+
+### Immediate Actions (Critical Issues)
+{% for check in checks %}
+{% if check.severity == "fail" %}
+1. **{{ check.title }}** - {{ check.suggested_fix }}
+{% endif %}
+{% endfor %}
+
+### Short-term Actions (Warnings)
+{% for check in checks %}
+{% if check.severity == "warn" %}
+1. **{{ check.title }}** - {{ check.suggested_fix }}
+{% endif %}
+{% endfor %}
+
+### Long-term Improvements
+1. **Regular Monitoring** - Set up automated monitoring for the media stack
+2. **Backup Strategy** - Implement regular backups of configuration and data
+3. **Update Schedule** - Establish a regular update schedule for containers and system
+4. **Documentation** - Maintain documentation of configuration changes
+
+## Support Information
+
+This report was generated by MediaStack Doctor v0.1.0.
+
+For additional support:
+- Check the support bundle (`support_bundle.tar.gz`) for detailed logs
+- Review container logs: `docker logs <container_name>`
+- Check system logs: `journalctl -u <service>`
+
+---
+
+*Report generated on {{ timestamp }}*

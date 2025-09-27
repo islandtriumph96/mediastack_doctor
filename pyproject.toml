@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mediastack-doctor"
+version = "0.1.0"
+description = "Diagnostics CLI for Docker+VPN+Plex/Arr stacks"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{name = "Dean", email = "example@example.com"}]
+dependencies = [
+  "rich",
+  "psutil",
+  "requests",
+  "PyYAML",
+  "Jinja2",
+  "keyring",
+  "docker"
+]
+
+[project.scripts]
+mediastack-doctor = "mediastack_doctor.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["mediastack_doctor*"]
+
+[tool.setuptools]
+py-modules = []
