@@ -530,6 +530,19 @@ def browse(outputs: Path) -> None:
         raise SystemExit(1)
 
 
+@cli_group.command()
+def menu() -> None:
+    """Launch the interactive main menu interface."""
+    from .main_menu import MainMenu
+    
+    try:
+        main_menu = MainMenu()
+        main_menu.run()
+    except Exception as e:
+        console.print(f"[red]Error running main menu: {e}[/red]")
+        raise SystemExit(1)
+
+
 @registry.command("set")
 @click.argument("service")
 @click.option("--url", help="Service URL")
@@ -741,16 +754,30 @@ def main(argv=None):
     """Main entry point for the CLI."""
     try:
         if argv is None:
-            cli_main()
+            # Check if no subcommand provided, default to menu
+            import sys
+            if len(sys.argv) == 1:
+                from .main_menu import MainMenu
+                main_menu = MainMenu()
+                main_menu.run()
+                return 0
+            else:
+                cli_main()
         else:
             # Handle command line arguments when called programmatically
-            import sys
-            original_argv = sys.argv
-            sys.argv = ["mediastack-doctor"] + argv
-            try:
-                cli_main()
-            finally:
-                sys.argv = original_argv
+            if not argv:  # Empty argv list, show menu
+                from .main_menu import MainMenu
+                main_menu = MainMenu()
+                main_menu.run()
+                return 0
+            else:
+                import sys
+                original_argv = sys.argv
+                sys.argv = ["mediastack-doctor"] + argv
+                try:
+                    cli_main()
+                finally:
+                    sys.argv = original_argv
         return 0
     except Exception as e:
         print(f"Error: {e}")
